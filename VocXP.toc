@@ -5,6 +5,7 @@
 ## Version: @project-version@
 ## SavedVariables: VocXPDB
 ## X-Website: https://github.com/vocino/vocxp
+## X-Curse-Project-ID: 1730542
 ## X-License: MIT
 
 main.lua
