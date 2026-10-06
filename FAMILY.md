@@ -72,9 +72,11 @@ order:
 5. **Blizzard's Game Data API for IDs and game data.** Item and spell
    IDs, names, and effects are looked up in Blizzard's own data before
    any database site. Items: `GET /data/wow/item/{itemId}` on the
-   `static-{region}` namespace. Spells have no public Game Data
-   endpoint, so spell IDs are checked against the client's own data
-   (DB2 mirrors such as wow.tools, or in the client itself); a
+   `static-{region}` namespace. Spells: `GET /data/wow/search/spell`
+   and `GET /data/wow/spell/{spellId}` (versioned `static-{build}`
+   namespace) — but Blizzard exposes only a subset of spells, so a
+   missing spell proves nothing; fall back to the client's own data
+   (DB2 mirrors such as wow.tools, or in the client itself). A
    database site is a lead to confirm there, never the source.
 
 Not used, ever: Wowpedia (fandom.com), WoWWiki, forum threads, blog
