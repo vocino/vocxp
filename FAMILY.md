@@ -12,6 +12,7 @@ identical in every Voc repository: change it in one, copy it to all.
 | VocWarbank | Audit the warband bank, bank, and bags; draw the line; clean house | `/vw`, `/vocwarbank` | https://github.com/vocino/vocwarbank |
 | VocGear | Equip bag upgrades out of combat (Pawn weights, or item level without Pawn) | `/vg`, `/vocgear` | https://github.com/vocino/vocgear |
 | VocXP | Session XP/hr and active XP bonuses in one tiny readout | `/vxp` | https://github.com/vocino/vocxp |
+| VocVendor | Vendor automation: sell junk, repair, and a smart Sell Old Gear button | `/vv`, `/vocvendor` | https://github.com/vocino/vocvendor |
 | VocDebug | Debug bus for addon development: structured lines to the chat log | `/vdbg` | https://github.com/vocino/vocdebug |
 
 ## Principles
@@ -25,9 +26,8 @@ identical in every Voc repository: change it in one, copy it to all.
 3. **Out of combat, out of the way.** Nothing acts during combat
    lockdown. No minimap buttons, no login spam, no popups the player
    did not ask for.
-4. **Guests, not dependencies.** Other addons are optional unless the
-   addon is meaningless without them (VocGear needs Pawn). Every
-   external call is presence-gated and `pcall`-guarded; a broken
+4. **Guests, not dependencies.** Other addons are always optional.
+   Every external call is presence-gated and `pcall`-guarded; a broken
    neighbor never breaks us. Suites that skin the UI are adopted when
    present and never required.
 5. **Settings apply live.** Changing an option in the panel or on the
