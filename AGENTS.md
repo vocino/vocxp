@@ -6,7 +6,10 @@
 - `VocXP.toc` — addon metadata (`Interface: 120100`)
 - `VERSIONING.md` — tag-driven semver releases (same scheme as vocgear)
 - `tests/run.lua` — stub-harness regression tests (`lua tests/run.lua`)
-- `.luacheckrc` — lint config declaring the addon's globals
+- `FAMILY.md` — conventions shared by every Voc addon (identical in
+  every repo; see its "change it in one, copy it to all" rule)
+- `.luacheckrc` — lint config: api-first WoW API allowlist (see
+  FAMILY.md "Sources of truth")
 - `.reference/api-verification.md` — per-API verification record
   (gitignored); the api-first rule lives here and in `.luacheckrc`
 - `.github` — `test.yml` (tests + lint) and `release.yml` (packager)

@@ -5,4 +5,5 @@ ignore:
   - .luacheckrc
   - tests
   - AGENTS.md
+  - FAMILY.md
   - VERSIONING.md
