@@ -13,7 +13,9 @@ it remembers where you put it.
 
 ```
 412k XP/hr
-+10% War Mode · Rested
++10% War Mode
++20% Warband Mentored
+Rested
 ```
 
 ```
@@ -23,9 +25,12 @@ it remembers where you put it.
 ```
 
 Line one is XP per hour for the current session (resets on
-login). Line two lists your active XP bonuses: War Mode (+10%)
-and Rested. No bonus, no mystery: it says "No XP bonus" so you
-know to fix it.
+login). Below it, one line per active bonus: War Mode (+10%),
+Warband Mentored Leveling with your current %, WHEE! (+10%,
+Darkmoon), Grim Visage / Unburdened (+10%, Hallow's End), and
+Rested. No bonus, no mystery: it says "No XP bonus" so you know
+know to fix it. Max-level characters never see the window at all, and the addon
+runs no ticker and no XP or aura event handlers for them.
 
 ## What's inside
 
