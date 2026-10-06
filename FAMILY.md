@@ -69,15 +69,17 @@ order:
    after checking the page's patch note against the build. It is
    community-maintained and usually current, but a signature there is
    a lead to confirm in source 1, never the source.
-5. **Blizzard's Game Data API for IDs and game data.** Item and spell
-   IDs, names, and effects are looked up in Blizzard's own data before
-   any database site. Items: `GET /data/wow/item/{itemId}` on the
-   `static-{region}` namespace. Spells: `GET /data/wow/search/spell`
-   and `GET /data/wow/spell/{spellId}` (versioned `static-{build}`
-   namespace) — but Blizzard exposes only a subset of spells, so a
-   missing spell proves nothing; fall back to the client's own data
-   (DB2 mirrors such as wow.tools, or in the client itself). A
-   database site is a lead to confirm there, never the source.
+5. **Blizzard's own data for IDs — the client first, the web API
+   second.** The running client is the database: code treats IDs as
+   keys and the client resolves them (`C_Spell.GetSpellInfo`,
+   `C_Item.GetItemInfo`, the aura APIs). Check an ID in game with
+   `/dump C_Spell.GetSpellInfo(<id>)` — nil means a wrong ID. Outside
+   the client, Blizzard's Game Data API covers items fully
+   (`/data/wow/item/{itemId}`, `static-{region}`) and spells partially
+   (`/data/wow/search/spell`, `/data/wow/spell/{spellId}` on the
+   versioned `static-{build}` namespace); a spell missing there proves
+   nothing, the client check wins. Database sites are leads, never the
+   source.
 
 Not used, ever: Wowpedia (fandom.com), WoWWiki, forum threads, blog
 tutorials, and memory of what a function used to take. Tell-tale
