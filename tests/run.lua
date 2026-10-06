@@ -69,15 +69,15 @@ local function loadAddon(world)
     f.ClearAllPoints = function() f.point = nil end
     f.SetPoint = function(_, p, _, _, x, y) f.point = { p, x, y } end
     f.GetPoint = function() return f.point[1], nil, nil, f.point[2], f.point[3] end
-    f.CreateFontString = function(_, _, _, template)
-      local t = { template = template }
+    f.CreateFontString = function(_, _, _, tmpl)
+      local t = { template = tmpl }
       t.SetPoint = function() end
       t.SetJustifyH = function() end
       t.SetText = function(_, s) t.text = s end
-      t.SetTextColor = function(_, r, g, b) t.color = { r, g, b } end
+      t.SetTextColor = function(_, r, gg, b) t.color = { r, gg, b } end
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
-      if template == "GameTooltipHeaderText" then f.title = t else f.body = t end
+      if tmpl == "GameTooltipHeaderText" then f.title = t else f.body = t end
       return t
     end
     world.frames[#world.frames + 1] = f
