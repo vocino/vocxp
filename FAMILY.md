@@ -10,7 +10,7 @@ identical in every Voc repository: change it in one, copy it to all.
 | Addon | Job | Slash | Repo |
 | --- | --- | --- | --- |
 | VocWarbank | Audit the warband bank, bank, and bags; draw the line; clean house | `/vw`, `/vocwarbank` | https://github.com/vocino/vocwarbank |
-| VocGear | Equip what Pawn says is an upgrade, out of combat | `/vg`, `/vocgear` | https://github.com/vocino/vocgear |
+| VocGear | Equip bag upgrades out of combat (Pawn weights, or item level without Pawn) | `/vg`, `/vocgear` | https://github.com/vocino/vocgear |
 | VocXP | Session XP/hr and active XP bonuses in one tiny readout | `/vxp` | https://github.com/vocino/vocxp |
 | VocDebug | Debug bus for addon development: structured lines to the chat log | `/vdbg` | https://github.com/vocino/vocdebug |
 
