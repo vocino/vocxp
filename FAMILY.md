@@ -69,6 +69,13 @@ order:
    after checking the page's patch note against the build. It is
    community-maintained and usually current, but a signature there is
    a lead to confirm in source 1, never the source.
+5. **Blizzard's Game Data API for IDs and game data.** Item and spell
+   IDs, names, and effects are looked up in Blizzard's own data before
+   any database site. Items: `GET /data/wow/item/{itemId}` on the
+   `static-{region}` namespace. Spells have no public Game Data
+   endpoint, so spell IDs are checked against the client's own data
+   (DB2 mirrors such as wow.tools, or in the client itself); a
+   database site is a lead to confirm there, never the source.
 
 Not used, ever: Wowpedia (fandom.com), WoWWiki, forum threads, blog
 tutorials, and memory of what a function used to take. Tell-tale
