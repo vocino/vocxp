@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: VocXP
+## Notes: Session XP/hr and active XP bonuses in one tiny readout. (Forever client)
+## Author: vocino
+## Version: @project-version@
+## SavedVariables: VocXPDB
+## X-Website: https://github.com/vocino/vocxp
+## X-Curse-Project-ID: 1730542
+## X-License: MIT
+
+main.lua
