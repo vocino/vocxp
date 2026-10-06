@@ -31,6 +31,9 @@ Remove: `Remove-Item '<AddOns>\VocXP'` (link only — never `-Recurse`)
 - Slash: `/vxp` (toggle), `/vxp lock`, `/vxp reset`.
 - Debugging follows `FAMILY.md` "Debugging": the `dbg` guest hook and
   the agent loop (`/vdbg mark`, `vocdebug since`).
+- Craft follows the `voc-addons` skill, the source of truth for how Voc
+  addons look, feel, and behave; load it before UI, settings, tooltip,
+  sound, or visual-polish work.
 
 ## Tests
 

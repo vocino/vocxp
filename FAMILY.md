@@ -114,6 +114,22 @@ git clone --depth 1 --branch live https://github.com/Gethe/wow-ui-source .refere
 grep -rn 'Name = "GetContainerItemInfo"' .reference/wow-ui-source/Interface/AddOns/Blizzard_APIDocumentationGenerated/
 ```
 
+## Craft
+
+How the addons look, feel, and behave is defined once, in the
+`voc-addons` skill, and consumed by every repo. The skill is the source
+of truth for the visual language, interaction standards, and scope
+discipline: Blizzard-native technique, a tiny semantic palette, every
+interaction confirming, settings applied live, defaults as onboarding,
+one file per job, scope discipline with a paper trail, zero
+dependencies, unavailable as a designed state, and designing for the
+next developer.
+
+When this file and the skill disagree about craft, the skill wins.
+Principles evolve in the skill; repos never fork them. The mechanically
+checkable principles ship as scripts in the skill's `checks/`
+directory and run in CI on every repo.
+
 ## Naming
 
 - The addon name is `Voc` + one word in CamelCase: `VocWarbank`,
