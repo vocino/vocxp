@@ -24,6 +24,8 @@ read_globals = {
   "C_PvP", "C_Timer", "C_UnitAuras",
   "CreateFrame", "GetXPExhaustion", "UIParent",
   "UnitXP", "UnitXPMax", "strtrim", "time",
+  -- VocDebug guest hook (our own addon, not a Blizzard API)
+  "VOCDBG",
 }
 
 files["tests/**"] = {

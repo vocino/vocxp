@@ -2,6 +2,9 @@ local name, ns = ...
 -- VocXP: session XP/hr plus active XP bonuses in one tiny readout.
 -- Nothing else.
 
+-- VocDebug guest hook: silent no-op unless the debug addon is loaded.
+local dbg = VOCDBG or function() end
+
 VocXPDB = VocXPDB or {}
 ns.db = VocXPDB
 
@@ -36,6 +39,7 @@ body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
 
 -- Session state.
 local sessionXP, sessionStart, lastXP, lastMax = 0, time(), 0, 0
+local lastBonusKey = nil -- VocDebug: emit only on bonus-set change
 
 local function fmt(n)
   if n >= 1e6 then return ("%.1fm"):format(n / 1e6) end
@@ -110,6 +114,11 @@ local function refresh()
   local elapsed = math.max(time() - sessionStart, 1)
   title:SetText(fmt(sessionXP / elapsed * 3600) .. " XP/hr")
   local bonuses = bonusParts()
+  local bonusKey = table.concat(bonuses, "|")
+  if bonusKey ~= lastBonusKey then
+    lastBonusKey = bonusKey
+    dbg("vocxp", "bonuses_changed", bonusKey == "" and "none" or bonusKey)
+  end
   if #bonuses == 0 then
     body:SetTextColor(RED[1], RED[2], RED[3])
     body:SetText("No XP bonus")
