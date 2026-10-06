@@ -1,0 +1,10 @@
+## Interface: 120100
+## Title: VocXP
+## Notes: Session XP/hr and active XP bonuses in one tiny readout.
+## Author: vocino
+## Version: @project-version@
+## SavedVariables: VocXPDB
+## X-Website: https://github.com/vocino/vocxp
+## X-License: MIT
+
+main.lua

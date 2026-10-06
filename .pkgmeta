@@ -1,0 +1,6 @@
+package-as: VocXP
+
+ignore:
+  - .github
+  - AGENTS.md
+  - VERSIONING.md
