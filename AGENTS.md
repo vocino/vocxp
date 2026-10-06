@@ -29,6 +29,8 @@ Remove: `Remove-Item '<AddOns>\VocXP'` (link only — never `-Recurse`)
 - `local name, ns = ...` first line; module state on `ns`.
 - `VocXPDB` is the only addon-created global.
 - Slash: `/vxp` (toggle), `/vxp lock`, `/vxp reset`.
+- Debugging follows `FAMILY.md` "Debugging": the `dbg` guest hook and
+  the agent loop (`/vdbg mark`, `vocdebug since`).
 
 ## Tests
 

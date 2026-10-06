@@ -226,6 +226,32 @@ readable in one sitting.
   (SavedVariables, `SLASH_*`).
 - `test.yml` runs both on every push and pull request.
 
+## Debugging
+
+The coding agent is blind in game: only Lua errors surface on their
+own. VocDebug is the family debug bus, built for the agent, not for
+manual checking.
+
+- Every addon carries the guest hook
+  `local dbg = VOCDBG or function() end` (silent no-op unless
+  VocDebug is loaded) and emits behavior events on it:
+  `dbg("<addon>", "<event>", "k=v k=v")`. `VOCDBG` is listed in each
+  repo's `.luacheckrc` read_globals, marked as our own addon.
+- Lines go to the private `vocdbg` channel as
+  `[VOCDBG] <session> <addon> <event> <payload>` and, with chat
+  logging on, land in `WoWChatLog.txt`. Lua errors ride the same bus
+  as `errors/lua_error` (VocDebug replaces BugGrabber/BugSack).
+- Emit on change, not on poll: a `bonuses_changed` when the set
+  changes, never a `bonus_poll` every tick. One line per meaningful
+  thing that happened.
+- The agent loop: the agent implements, hands the player numbered
+  actions and a mark label; the player runs `/vdbg mark <label>`
+  and does the actions; the agent reads `vocdebug since <label>`
+  (`tools/vocdebug` in the VocDebug repo, python3 stdlib) and
+  reports what fired, what didn't, and where the gaps are. On a
+  machine that also runs WoW, the agent reads the log directly —
+  no paste step.
+
 ## Releases
 
 See `VERSIONING.md` (identical in every repo): tag-driven semver,
