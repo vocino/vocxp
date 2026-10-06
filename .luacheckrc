@@ -2,10 +2,13 @@
 -- 5.4 features behind guards.
 --
 -- read_globals is the allowlist of WoW API verified against the build
--- in `## Interface:` (Blizzard_APIDocumentationGenerated for that
--- build). Lint fails on any other global on purpose: add a name here
--- only after confirming it exists, under that namespace, in the
--- current build. Never from a wiki.
+-- in `## Interface:` (12.1.0). C_* namespaces come from
+-- Blizzard_APIDocumentationGenerated on that build; legacy globals are
+-- confirmed in Blizzard's own shipped Lua on the same build. The
+-- per-API record lives in `.reference/api-verification.md` (gitignored,
+-- same as vocgear's). Lint fails on any other global on purpose: add a
+-- name here only after confirming it exists, under that namespace, in
+-- the current build. Never from a wiki.
 std = "lua51"
 max_line_length = false
 self = false

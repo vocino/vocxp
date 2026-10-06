@@ -26,10 +26,13 @@ frame:SetBackdrop({
 frame:SetBackdropColor(0, 0, 0, 0.85)
 frame:SetBackdropBorderColor(1, 0.82, 0)
 
-local text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-text:SetPoint("TOPLEFT", 4, -4)
-text:SetJustifyH("LEFT")
-text:SetShadowOffset(1, -1)
+-- Readout text. Tooltip text hierarchy, straight from the client's own
+-- templates (Blizzard_Fonts_Shared/Shared/FontStyles.xml): a header title
+-- line, then smaller body lines. Colors set separately via SetTextColor.
+local title = frame:CreateFontString(nil, "OVERLAY", "GameTooltipHeaderText")
+title:SetPoint("TOPLEFT", 10, -10)
+local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
 
 -- Session state.
 local sessionXP, sessionStart, lastXP, lastMax = 0, time(), 0, 0
@@ -50,11 +53,12 @@ local function rested()
   return GetXPExhaustion() ~= nil
 end
 
--- Fixed-value XP-buff auras by spell ID: WHEE!
--- (Darkmoon carousel/coaster/Top Hat), Grim Visage / Unburdened
--- (Hallow's End Wickerman, one per faction).
+-- Fixed-value XP-buff auras by spell ID: WHEE! (Darkmoon carousel and
+-- coaster), Darkmoon Top Hat (separate aura, same +10%), Grim Visage /
+-- Unburdened (Hallow's End Wickerman, one per faction).
 local xpBuffs = {
   { id = 46668, label = "+10% WHEE!" },
+  { id = 136583, label = "+10% Darkmoon Top Hat" },
   { id = 24705, label = "+10% Grim Visage" },
   { id = 95987, label = "+10% Unburdened" },
 }
@@ -65,9 +69,9 @@ local function playerAura(spellID)
   return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
 end
 
--- Tooltip text hierarchy: white title line, green bonus lines, red warning.
-local WHITE, GREEN, RED = "ffffff", "40ff40", "ff4040"
-local function painted(color, s) return "|cff" .. color .. s .. "|r" end
+-- Bonus-line colors (title stays the template's white).
+local GREEN = { 0.25, 1, 0.25 }
+local RED = { 1, 0.25, 0.25 }
 
 local function hasAura(spellID) return playerAura(spellID) ~= nil end
 
@@ -97,24 +101,25 @@ local function bonusParts()
 end
 
 local function refresh()
-  local lines = {}
   local o = opts()
   local maxed = (lastMax or 0) == 0
   if maxed then
     frame:SetShown(false)
     return
-  else
-    local elapsed = math.max(time() - sessionStart, 1)
-    lines[1] = painted(WHITE, fmt(sessionXP / elapsed * 3600) .. " XP/hr")
   end
+  local elapsed = math.max(time() - sessionStart, 1)
+  title:SetText(fmt(sessionXP / elapsed * 3600) .. " XP/hr")
   local bonuses = bonusParts()
   if #bonuses == 0 then
-    lines[#lines + 1] = painted(RED, "No XP bonus")
+    body:SetTextColor(RED[1], RED[2], RED[3])
+    body:SetText("No XP bonus")
   else
-    for _, b in ipairs(bonuses) do lines[#lines + 1] = painted(GREEN, b) end
+    body:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+    body:SetText(table.concat(bonuses, "\n"))
   end
-  text:SetText(table.concat(lines, "\n"))
-  frame:SetSize(text:GetStringWidth() + 8, text:GetStringHeight() + 8)
+  local w = math.max(title:GetStringWidth(), body:GetStringWidth())
+  local h = title:GetStringHeight() + 4 + body:GetStringHeight()
+  frame:SetSize(w + 20, h + 20)
   frame:SetShown(o.shown)
 end
 

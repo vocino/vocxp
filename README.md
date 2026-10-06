@@ -8,7 +8,7 @@ tiny readout.
 
 ## Use
 
-A small transparent window, FPS-tracker style. Drag it anywhere;
+A small tooltip-styled window. Drag it anywhere;
 it remembers where you put it.
 
 ```
@@ -26,10 +26,11 @@ Rested
 
 Line one is XP per hour for the current session (resets on
 login). Below it, one line per active bonus: War Mode (+10%),
-Warband Mentored Leveling with your current %, WHEE! (+10%,
-Darkmoon), Grim Visage / Unburdened (+10%, Hallow's End), and
-Rested. No bonus, no mystery: it says "No XP bonus" so you know
-know to fix it. Max-level characters never see the window at all, and the addon
+Warband Mentored Leveling with your current %, WHEE! and Darkmoon
+Top Hat (+10% each, Darkmoon), Grim Visage / Unburdened (+10%,
+Hallow's End), and Rested. No bonus, no mystery: it says "No XP
+bonus" so you know to fix it. Max-level characters never see the
+window at all, and the addon
 runs no ticker and no XP or aura event handlers for them.
 
 ## What's inside

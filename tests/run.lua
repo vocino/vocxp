@@ -9,14 +9,20 @@
 local testDir = debug.getinfo(1, "S").source:gsub("\\", "/"):match("@?(.*/)") or ""
 local mainPath = testDir .. "../main.lua"
 
-local function W(s) return "|cffffffff" .. s .. "|r" end
-local function G(s) return "|cff40ff40" .. s .. "|r" end
-local function R(s) return "|cffff4040" .. s .. "|r" end
-
 local passed = 0
 local function check(name, cond)
   if not cond then error("FAIL: " .. name, 2) end
   passed = passed + 1
+end
+
+-- Expected readout: title line, body lines, body color.
+local GREEN_C = { 0.25, 1, 0.25 }
+local RED_C = { 1, 0.25, 0.25 }
+local function readout(w, title, body, c)
+  local bc = w.frame.body.color or {}
+  return w.frame.title.text == title
+    and w.frame.body.text == body
+    and bc[1] == c[1] and bc[2] == c[2] and bc[3] == c[3]
 end
 
 -- Fresh stub world per test.
@@ -63,15 +69,15 @@ local function loadAddon(world)
     f.ClearAllPoints = function() f.point = nil end
     f.SetPoint = function(_, p, _, _, x, y) f.point = { p, x, y } end
     f.GetPoint = function() return f.point[1], nil, nil, f.point[2], f.point[3] end
-    f.CreateFontString = function()
-      local t = {}
+    f.CreateFontString = function(_, _, _, template)
+      local t = { template = template }
       t.SetPoint = function() end
       t.SetJustifyH = function() end
-      t.SetShadowOffset = function() end
       t.SetText = function(_, s) t.text = s end
+      t.SetTextColor = function(_, r, g, b) t.color = { r, g, b } end
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
-      f.fontstring = t
+      if template == "GameTooltipHeaderText" then f.title = t else f.body = t end
       return t
     end
     world.frames[#world.frames + 1] = f
@@ -158,7 +164,7 @@ do
   w.time = w.time + 1800
   w.xp = 500
   xpEvent(w)
-  check("rate text", w.frame.fontstring.text == W("1k XP/hr") .. "\n" .. R("No XP bonus"))
+  check("rate text", readout(w, "1k XP/hr", "No XP bonus", RED_C))
 end
 
 -- 5. Level-up carries the remainder across the bar.
@@ -169,7 +175,7 @@ do
   clientLoaded(w)
   w.xp, w.max, w.time = 100, 2000, w.time + 3600
   xpEvent(w)
-  check("level-up carries", w.frame.fontstring.text == W("200 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("level-up carries", readout(w, "200 XP/hr", "No XP bonus", RED_C))
 end
 
 -- 6. Max-level characters never show the readout.
@@ -189,7 +195,7 @@ do -- cap raised later: next login wakes everything back up
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   check("cap raise reshows", w.frame.shown == true)
   check("cap raise restarts ticker", #w.tickers == 1)
-  check("cap raise rate", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("cap raise rate", readout(w, "0 XP/hr", "No XP bonus", RED_C))
 end
 do -- toggle at max level keeps the pref but says so
   local w = newWorld()
@@ -207,27 +213,27 @@ do
   w.warMode = true
   loadAddon(w)
   clientLoaded(w)
-  check("war mode line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% War Mode"))
+  check("war mode line", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
 end
 do
   local w = newWorld()
   w.rested = true
   loadAddon(w)
   clientLoaded(w)
-  check("rested line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("Rested"))
+  check("rested line", readout(w, "0 XP/hr", "Rested", GREEN_C))
 end
 do
   local w = newWorld()
   w.warMode, w.rested = true, true
   loadAddon(w)
   clientLoaded(w)
-  check("bonuses stack", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% War Mode") .. "\n" .. G("Rested"))
+  check("bonuses stack", readout(w, "0 XP/hr", "+10% War Mode\nRested", GREEN_C))
 end
 do
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  check("no bonus line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("no bonus line", readout(w, "0 XP/hr", "No XP bonus", RED_C))
 end
 
 -- 8. The ticker refreshes the rate between XP events.
@@ -239,10 +245,10 @@ do
   check("ticker registered", #w.tickers == 1 and w.tickers[1].secs == 5)
   w.xp = 3600
   xpEvent(w)
-  check("fresh rate spikes", w.frame.fontstring.text == W("13.0m XP/hr") .. "\n" .. R("No XP bonus"))
+  check("fresh rate spikes", readout(w, "13.0m XP/hr", "No XP bonus", RED_C))
   w.time = w.time + 3600
   w.tickers[1].fn()
-  check("ticker decays rate", w.frame.fontstring.text == W("4k XP/hr") .. "\n" .. R("No XP bonus"))
+  check("ticker decays rate", readout(w, "4k XP/hr", "No XP bonus", RED_C))
 end
 
 -- 9. /vxp toggles the readout.
@@ -284,7 +290,7 @@ do
   xpEvent(w)
   w.time = w.time + 100
   w.env.SlashCmdList.VOCXP("reset")
-  check("reset zeroes rate", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("reset zeroes rate", readout(w, "0 XP/hr", "No XP bonus", RED_C))
   check("reset announces", w.printed[#w.printed] == "VocXP: session reset.")
 end
 
@@ -315,28 +321,35 @@ do
   w.auras[430191] = { points = { 20 } }
   loadAddon(w)
   clientLoaded(w)
-  check("mentored line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+20% Warband Mentored"))
+  check("mentored line", readout(w, "0 XP/hr", "+20% Warband Mentored", GREEN_C))
 end
 do
   local w = newWorld()
   w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("whee line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% WHEE!"))
+  check("whee line", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
+end
+do
+  local w = newWorld()
+  w.auras[136583] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  check("top hat line", readout(w, "0 XP/hr", "+10% Darkmoon Top Hat", GREEN_C))
 end
 do
   local w = newWorld()
   w.auras[24705] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("grim visage line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% Grim Visage"))
+  check("grim visage line", readout(w, "0 XP/hr", "+10% Grim Visage", GREEN_C))
 end
 do
   local w = newWorld()
   w.auras[95987] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("unburdened line", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% Unburdened"))
+  check("unburdened line", readout(w, "0 XP/hr", "+10% Unburdened", GREEN_C))
 end
 do
   local w = newWorld()
@@ -344,8 +357,8 @@ do
   w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
   loadAddon(w)
   clientLoaded(w)
-  check("all bonuses stack in order", w.frame.fontstring.text == W("0 XP/hr")
-    .. "\n" .. G("+10% War Mode") .. "\n" .. G("+20% Warband Mentored") .. "\n" .. G("+10% WHEE!") .. "\n" .. G("Rested"))
+  check("all bonuses stack in order", readout(w, "0 XP/hr",
+    "+10% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested", GREEN_C))
 end
 do -- missing aura API degrades to no aura lines, no error
   local w = newWorld()
@@ -353,7 +366,7 @@ do -- missing aura API degrades to no aura lines, no error
   loadAddon(w)
   w.env.C_UnitAuras = nil
   clientLoaded(w)
-  check("no aura api degrades", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("no aura api degrades", readout(w, "0 XP/hr", "No XP bonus", RED_C))
 end
 
 do -- mentored without a readable value shows no number
@@ -361,14 +374,14 @@ do -- mentored without a readable value shows no number
   w.auras[430191] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("mentored fallback", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("Warband Mentored"))
+  check("mentored fallback", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
 end
 do -- out-of-range value is not trusted
   local w = newWorld()
   w.auras[430191] = { points = { 5000 } }
   loadAddon(w)
   clientLoaded(w)
-  check("mentored range gate", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("Warband Mentored"))
+  check("mentored range gate", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
 end
 
 -- 14. Aura changes refresh the readout.
@@ -377,12 +390,12 @@ do
   loadAddon(w)
   clientLoaded(w)
   check("unit_aura registered", w.frame.events.UNIT_AURA == true)
-  check("no aura yet", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("no aura yet", readout(w, "0 XP/hr", "No XP bonus", RED_C))
   w.auras[46668] = {}
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
-  check("other unit ignored", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. R("No XP bonus"))
+  check("other unit ignored", readout(w, "0 XP/hr", "No XP bonus", RED_C))
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("player aura refreshes", w.frame.fontstring.text == W("0 XP/hr") .. "\n" .. G("+10% WHEE!"))
+  check("player aura refreshes", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
 end
 
 -- 15. Tooltip frame styling and auto-fit.
@@ -394,7 +407,9 @@ do
   check("tooltip background", w.frame.backdrop.bgFile == "Interface\\Tooltips\\UI-Tooltip-Background")
   check("tooltip border", w.frame.backdrop.edgeFile == "Interface\\Tooltips\\UI-Tooltip-Border")
   check("backdrop colors", w.frame.backdropColor[4] == 0.85 and w.frame.borderColor[1] == 1)
-  check("frame fits text", w.frame.size[1] == 108 and w.frame.size[2] == 38)
+  check("title uses tooltip header font", w.frame.title.template == "GameTooltipHeaderText")
+  check("body uses tooltip text font", w.frame.body.template == "GameTooltipText")
+  check("frame fits text", w.frame.size[1] == 120 and w.frame.size[2] == 84)
 end
 
 -- 16. Max level goes fully dormant: no ticker, no hot events.

@@ -7,6 +7,8 @@
 - `VERSIONING.md` — tag-driven semver releases (same scheme as vocgear)
 - `tests/run.lua` — stub-harness regression tests (`lua tests/run.lua`)
 - `.luacheckrc` — lint config declaring the addon's globals
+- `.reference/api-verification.md` — per-API verification record
+  (gitignored); the api-first rule lives here and in `.luacheckrc`
 - `.github` — `test.yml` (tests + lint) and `release.yml` (packager)
 
 ## Live testing
