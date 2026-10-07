@@ -688,6 +688,18 @@ do -- compaction preserves sums and rates
   check("compact same status", after.status == before.status)
   check("compact resets head", tr.head == 1)
 end
+do -- input adapter rejects zero and non-finite awards
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local tr = ns.newTracker(0)
+  check("zero ignored", ns.addAward(tr, 10, 0) == false)
+  check("negative ignored", ns.addAward(tr, 10, -5) == false)
+  check("nan amount ignored", ns.addAward(tr, 10, 0 / 0) == false)
+  check("infinite amount ignored", ns.addAward(tr, 10, math.huge) == false)
+  check("nan time ignored", ns.addAward(tr, 0 / 0, 100) == false)
+  check("nothing counted", tr.sum == 0 and #tr.events == 0)
+  check("valid accepted", ns.addAward(tr, 10, 100) == true and tr.sum == 100)
+end
 
 -- 18. Readout labels.
 do
