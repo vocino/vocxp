@@ -8,6 +8,11 @@ local dbg = VOCDBG or function() end
 VocXPDB = VocXPDB or {}
 ns.db = VocXPDB
 
+ns.PREFIX_COLOR = "ff66ccff" -- the family color, same everywhere
+function ns.say(msg)
+  print("|c" .. ns.PREFIX_COLOR .. name .. "|r: " .. tostring(msg))
+end
+
 local defaults = { shown = true, locked = false, point = "CENTER", x = -340, y = 200 }
 local function opts()
   for k, v in pairs(defaults) do
@@ -201,6 +206,14 @@ function ns.etaText(est)
   return "Next level: " .. ns.formatEta(est.etaSeconds)
 end
 
+-- Palette, defined once per the voc-addons skill: house gold for the
+-- title and frame accent, soft red/green for bonus state only.
+local COLORS = {
+  gold = { 1, 0.82, 0 },
+  green = { 0.25, 1, 0.25 },
+  red = { 1, 0.25, 0.25 },
+}
+
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent, "BackdropTemplate")
 frame:SetSize(150, 32)
 frame:SetMovable(true)
@@ -212,7 +225,7 @@ frame:SetBackdrop({
   insets = { left = 4, right = 4, top = 4, bottom = 4 },
 })
 frame:SetBackdropColor(0, 0, 0, 0.85)
-frame:SetBackdropBorderColor(1, 0.82, 0)
+frame:SetBackdropBorderColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
 
 -- Readout text. Tooltip text hierarchy, straight from the client's own
 -- templates (Blizzard_Fonts_Shared/Shared/FontStyles.xml): a header title
@@ -221,6 +234,7 @@ frame:SetBackdropBorderColor(1, 0.82, 0)
 -- tells same-template strings apart by creation order) routes them.
 local title = frame:CreateFontString(nil, "OVERLAY", "GameTooltipHeaderText")
 title:SetPoint("TOPLEFT", 10, -10)
+title:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
 local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 local eta = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 eta:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
@@ -238,6 +252,19 @@ local function warMode()
   return type(C_PvP) == "table"
     and type(C_PvP.IsWarModeDesired) == "function"
     and C_PvP.IsWarModeDesired()
+end
+
+-- The Enlisted buff starts at +10% but a Call to Arms for the
+-- player's faction raises it, so read the live value instead of
+-- hardcoding the base.
+local function warModeLabel()
+  if not warMode() then return nil end
+  local pct = 10
+  if type(C_PvP.GetWarModeRewardBonus) == "function" then
+    local v = C_PvP.GetWarModeRewardBonus()
+    if type(v) == "number" and v >= 1 and v <= 100 then pct = v end
+  end
+  return ("+%d%% War Mode"):format(pct)
 end
 
 local function rested()
@@ -260,9 +287,19 @@ local function playerAura(spellID)
   return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
 end
 
--- Bonus-line colors (title stays the template's white).
-local GREEN = { 0.25, 1, 0.25 }
-local RED = { 1, 0.25, 0.25 }
+-- Checkbox toggle sounds (voc-addons principle 3): every slash toggle
+-- confirms audibly. SOUNDKIT constants are primary; the numeric IDs
+-- keep working across a Blizzard rename. Fully presence-gated: no
+-- sound API, no sound, never an error.
+local function click(on)
+  if type(C_Sound) ~= "table" or type(C_Sound.PlaySound) ~= "function" then return end
+  local id
+  if type(SOUNDKIT) == "table" then
+    id = on and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON or SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_OFF
+  end
+  if type(id) ~= "number" then id = on and 856 or 857 end
+  C_Sound.PlaySound(id)
+end
 
 local function hasAura(spellID) return playerAura(spellID) ~= nil end
 
@@ -281,7 +318,8 @@ end
 
 local function bonusParts()
   local parts = {}
-  if warMode() then parts[#parts + 1] = "+10% War Mode" end
+  local warModeBonus = warModeLabel()
+  if warModeBonus then parts[#parts + 1] = warModeBonus end
   local mentored = mentoredLabel()
   if mentored then parts[#parts + 1] = mentored end
   for _, buff in ipairs(xpBuffs) do
@@ -307,10 +345,10 @@ local function refresh()
     dbg("vocxp", "bonuses_changed", bonusKey == "" and "none" or bonusKey)
   end
   if #bonuses == 0 then
-    body:SetTextColor(RED[1], RED[2], RED[3])
+    body:SetTextColor(COLORS.red[1], COLORS.red[2], COLORS.red[3])
     body:SetText("No XP bonus")
   else
-    body:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
+    body:SetTextColor(COLORS.green[1], COLORS.green[2], COLORS.green[3])
     body:SetText(table.concat(bonuses, "\n"))
   end
   local w = math.max(title:GetStringWidth(), eta:GetStringWidth(), body:GetStringWidth())
@@ -412,7 +450,8 @@ SlashCmdList.VOCXP = function(msg)
   if msg == "lock" then
     o.locked = not o.locked
     frame:EnableMouse(not o.locked)
-    print(name .. ": " .. (o.locked and "locked." or "unlocked. Drag to move."))
+    click(o.locked)
+    ns.say(o.locked and "locked." or "unlocked. Drag to move.")
   elseif msg == "pause" then
     paused = not paused
     if not paused then
@@ -422,20 +461,23 @@ SlashCmdList.VOCXP = function(msg)
       baseline = readSnapshot()
     end
     refresh()
-    print(name .. ": " .. (paused and "paused." or "resumed."))
+    click(paused)
+    ns.say(paused and "paused." or "resumed.")
   elseif msg == "reset" then
     tracker = ns.newTracker(GetTime())
     baseline = readSnapshot()
     paused = false
     refresh()
-    print(name .. ": session reset.")
+    click(true)
+    ns.say("session reset.")
   else
     o.shown = not o.shown
     refresh()
     if baseline and baseline.capped then
-      print(name .. ": max level (stays hidden).")
+      ns.say("max level (stays hidden).")
     else
-      print(name .. ": " .. (o.shown and "shown." or "hidden."))
+      click(o.shown)
+      ns.say(o.shown and "shown." or "hidden.")
     end
   end
 end

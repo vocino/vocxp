@@ -1,6 +1,6 @@
 ## Interface: 120100
 ## Title: VocXP
-## Notes: Session XP/hr and active XP bonuses in one tiny readout.
+## Notes: Rolling XP/hr and time-to-level, plus active XP bonuses. Slash: /vxp.
 ## Author: vocino
 ## Version: @project-version@
 ## SavedVariables: VocXPDB

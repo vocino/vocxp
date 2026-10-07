@@ -38,8 +38,12 @@ local function loadAddon(world)
   g.UnitLevel = function() return world.level end
   g.UnitGUID = function() return world.guid end
   g.GetXPExhaustion = function() return world.rested and 1 or nil end
-  g.C_PvP = { IsWarModeDesired = function() return world.warMode end }
+  g.C_PvP = {
+    IsWarModeDesired = function() return world.warMode end,
+    GetWarModeRewardBonus = function() return world.warBonus end,
+  }
   g.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return world.auras[id] end }
+  g.C_Sound = { PlaySound = function(id) world.sounds[#world.sounds + 1] = id end }
   g.C_Timer = {
     NewTicker = function(secs, fn)
       local t = { secs = secs, fn = fn }
@@ -113,8 +117,8 @@ end
 
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
-           rested = false, warMode = false, auras = {},
-           printed = {}, tickers = {}, frames = {}, savedVars = nil }
+           rested = false, warMode = false, warBonus = 10, auras = {},
+           printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil }
 end
 
 -- Simulate the client deserializing SavedVariables (a FRESH table replaces
@@ -230,7 +234,7 @@ do -- toggle at max level keeps the pref but says so
   clientLoaded(w)
   w.env.SlashCmdList.VOCXP("")
   check("max toggle stays hidden", w.frame.shown == false)
-  check("max toggle announces", w.printed[#w.printed] == "VocXP: max level (stays hidden).")
+  check("max toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden).")
 end
 
 -- 7. Bonus lines.
@@ -270,6 +274,43 @@ do
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
   check("no bonus line", readout(w, "0 XP/hr · last 1m", "No XP bonus", RED_C))
 end
+do -- Call to Arms raises the Enlisted value above the +10% base
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 15
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("war mode live value", readout(w, "0 XP/hr · last 1m", "+15% War Mode", GREEN_C))
+end
+do
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 30
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("war mode high call", readout(w, "0 XP/hr · last 1m", "+30% War Mode", GREEN_C))
+end
+do -- missing bonus API falls back to the +10% base
+  local w = newWorld()
+  w.warMode = true
+  loadAddon(w)
+  w.env.C_PvP = { IsWarModeDesired = function() return true end }
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("war mode fallback", readout(w, "0 XP/hr · last 1m", "+10% War Mode", GREEN_C))
+end
+do -- out-of-range value is not trusted
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 5000
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("war mode range gate", readout(w, "0 XP/hr · last 1m", "+10% War Mode", GREEN_C))
+end
 
 -- 8. The ticker refreshes the rate between XP events.
 do
@@ -301,10 +342,10 @@ do
   local slash = w.env.SlashCmdList.VOCXP
   slash("")
   check("slash hides", w.frame.shown == false)
-  check("slash hide announces", w.printed[#w.printed] == "VocXP: hidden.")
+  check("slash hide announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: hidden.")
   slash("")
   check("slash shows", w.frame.shown == true)
-  check("slash show announces", w.printed[#w.printed] == "VocXP: shown.")
+  check("slash show announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: shown.")
 end
 
 -- 10. /vxp lock toggles mouse input.
@@ -315,10 +356,10 @@ do
   local slash = w.env.SlashCmdList.VOCXP
   slash("lock")
   check("lock disables mouse", w.frame.mouse == false)
-  check("lock announces", w.printed[#w.printed] == "VocXP: locked.")
+  check("lock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: locked.")
   slash("  LOCK  ")
   check("lock toggles back", w.frame.mouse == true)
-  check("unlock announces", w.printed[#w.printed] == "VocXP: unlocked. Drag to move.")
+  check("unlock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: unlocked. Drag to move.")
 end
 
 -- 11. /vxp reset zeroes the session.
@@ -333,7 +374,7 @@ do
   w.now = w.now + 100
   w.env.SlashCmdList.VOCXP("reset")
   check("reset collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
-  check("reset announces", w.printed[#w.printed] == "VocXP: session reset.")
+  check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset.")
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
@@ -476,6 +517,8 @@ do
   check("title uses tooltip header font", w.frame.title.template == "GameTooltipHeaderText")
   check("body uses tooltip text font", w.frame.body.template == "GameTooltipText")
   check("eta uses tooltip text font", w.frame.eta.template == "GameTooltipText")
+  local tc = w.frame.title.color or {}
+  check("title is house gold", tc[1] == 1 and tc[2] == 0.82 and tc[3] == 0)
   check("frame fits text", w.frame.size[1] == 120 and w.frame.size[2] == 118)
 end
 
@@ -838,18 +881,35 @@ do -- /vxp pause freezes the display; resume restarts the gate
   xpEvent(w)
   slash("pause")
   check("pause display", w.frame.title.text == "Paused" and etaline(w) == "Paused")
-  check("pause announces", w.printed[#w.printed] == "VocXP: paused.")
+  check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused.")
   w.now = w.now + 60
   w.xp = 600
   xpEvent(w)
   check("pause ignores awards", w.frame.title.text == "Paused")
   slash("pause")
   check("resume collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
-  check("resume announces", w.printed[#w.printed] == "VocXP: resumed.")
+  check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed.")
   w.now = w.now + 60
   w.xp = 900
   xpEvent(w)
   check("resume no backfill", readout(w, "18k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
+end
+
+-- 21. Slash toggles confirm with checkbox sounds (numeric fallback:
+-- the harness provides no SOUNDKIT table).
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local slash = w.env.SlashCmdList.VOCXP
+  slash("")
+  slash("")
+  slash("lock")
+  slash("lock")
+  slash("pause")
+  slash("pause")
+  slash("reset")
+  check("toggle sounds", table.concat(w.sounds, ",") == "857,856,856,857,856,857,856")
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")

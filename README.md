@@ -31,7 +31,8 @@ refreshed every second. While the window fills it names what it
 has actually watched (`last 2m · warming up`); the first thirty
 seconds just say Collecting data. Line two forecasts the next
 level at that rate — the tilde means approximate, never a
-promise. Below it, one line per active bonus: War Mode (+10%),
+promise. Below it, one line per active bonus: War Mode (live
+Enlisted value, +10% base, higher under Call to Arms),
 Warband Mentored Leveling with your current %, WHEE! and Darkmoon
 Top Hat (+10% each, Darkmoon), Grim Visage / Unburdened (+10%,
 Hallow's End), and Rested. No bonus, no mystery: it says "No XP
