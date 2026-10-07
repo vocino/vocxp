@@ -14,8 +14,8 @@ it remembers where you put it.
 ```
 144k XP/hr · last 5m
 Next level: ~25m
-+10% War Mode
 +20% Warband Mentored
++10% War Mode
 Rested
 ```
 
@@ -30,13 +30,28 @@ Line one is XP per hour over the trailing five minutes,
 refreshed every second. While the window fills it names what it
 has actually watched (`last 2m · warming up`); the first thirty
 seconds just say Collecting data. Line two forecasts the next
-level at that rate — the tilde means approximate, never a
+level at your trailing-fifteen-minute pace, so one-off bursts
+don't rewrite the forecast — the tilde means approximate, never a
 promise. Below it, one line per active bonus: War Mode (live
 Enlisted value, +10% base, higher under Call to Arms),
 Warband Mentored Leveling with your current %, WHEE! and Darkmoon
-Top Hat (+10% each, Darkmoon), Grim Visage / Unburdened (+10%,
+Top Hat (+10%, Darkmoon, either/or), Grim Visage / Unburdened (+10%,
 Hallow's End), and Rested. No bonus, no mystery: it says "No XP
-bonus" so you know to fix it. Max-level characters never see the
+bonus" so you know to fix it. Below that, gray lines name the
+bonuses you are missing, each with its value and a short
+how-to:
+
+```
++10% WHEE! (Faire week)
++10% Wickerman (Hallow's End)
+```
+
+In dungeons and other instances the game hides world-granted
+auras from addons, so aura lines pause there with an honest note
+instead of pretending your buffs expired; War Mode and Rested
+keep reporting live.
+
+Max-level characters never see the
 window at all, and the addon
 runs no ticker and no XP, level, or aura event handlers for them.
 

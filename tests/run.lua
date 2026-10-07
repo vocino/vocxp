@@ -43,6 +43,7 @@ local function loadAddon(world)
     GetWarModeRewardBonus = function() return world.warBonus end,
   }
   g.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return world.auras[id] end }
+  g.IsInInstance = function() return world.inInstance end
   g.C_Sound = { PlaySound = function(id) world.sounds[#world.sounds + 1] = id end }
   g.C_Timer = {
     NewTicker = function(secs, fn)
@@ -76,19 +77,22 @@ local function loadAddon(world)
     f.SetPoint = function(_, p, _, _, x, y) f.point = { p, x, y } end
     f.GetPoint = function() return f.point[1], nil, nil, f.point[2], f.point[3] end
     f.CreateFontString = function(_, _, _, tmpl)
-      local t = { template = tmpl }
+      local t = { template = tmpl, text = "" }
       t.SetPoint = function() end
       t.SetJustifyH = function() end
       t.SetText = function(_, s) t.text = s end
+      t.GetText = function() return t.text end
       t.SetTextColor = function(_, r, gg, b) t.color = { r, gg, b } end
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
       -- Same-template strings route by creation order: main.lua creates
       -- the body before the ETA line, so the first GameTooltipText is
-      -- the body and the second is the ETA line.
+      -- the body and the second is the ETA line; a third is the
+      -- missing-buff section.
       if tmpl == "GameTooltipHeaderText" then f.title = t
       elseif f.body == nil then f.body = t
-      else f.eta = t end
+      elseif f.eta == nil then f.eta = t
+      else f.missed = t end
       return t
     end
     world.frames[#world.frames + 1] = f
@@ -117,7 +121,7 @@ end
 
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
-           rested = false, warMode = false, warBonus = 10, auras = {},
+           rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
            printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil }
 end
 
@@ -130,6 +134,10 @@ end
 
 local function levelEvent(w)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_LEVEL_UP", w.level)
+end
+
+local function missedline(w)
+  return w.frame.missed and w.frame.missed.text
 end
 
 local function etaline(w)
@@ -192,7 +200,7 @@ do
   w.xp = 500
   xpEvent(w)
   check("rate text", readout(w, "6k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("rate eta", etaline(w) == "Next level: ~5m")
+  check("rate eta", etaline(w) == "Next level: ~15m")
 end
 
 -- 5. Level-up carries the remainder across the bar.
@@ -205,7 +213,7 @@ do
   w.now = w.now + 3600
   xpEvent(w)
   check("level-up carries", readout(w, "2k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("level-up eta", etaline(w) == "Next level: ~48m")
+  check("level-up eta", etaline(w) == "Next level: ~2h23m")
 end
 
 -- 6. Max-level characters never show the readout.
@@ -456,8 +464,30 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("all bonuses stack in order", readout(w, "0 XP/hr · last 1m",
-    "+10% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested", GREEN_C))
+  check("bonuses sort by value", readout(w, "0 XP/hr · last 1m",
+    "+20% Warband Mentored\n+10% War Mode\n+10% WHEE!\nRested", GREEN_C))
+end
+do -- highest bonus first across sources
+  local w = newWorld()
+  w.warMode, w.warBonus, w.rested = true, 30, true
+  w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("bonuses sort descending", readout(w, "0 XP/hr · last 1m",
+    "+30% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested", GREEN_C))
+end
+do -- lines without a number trail the valued lines
+  local w = newWorld()
+  w.warMode = true
+  w.auras[430191] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("unvalued lines trail", readout(w, "0 XP/hr · last 1m",
+    "+10% War Mode\nWarband Mentored", GREEN_C))
 end
 do -- missing aura API degrades to no aura lines, no error
   local w = newWorld()
@@ -519,7 +549,8 @@ do
   check("eta uses tooltip text font", w.frame.eta.template == "GameTooltipText")
   local tc = w.frame.title.color or {}
   check("title is house gold", tc[1] == 1 and tc[2] == 0.82 and tc[3] == 0)
-  check("frame fits text", w.frame.size[1] == 120 and w.frame.size[2] == 118)
+  check("missed uses tooltip text font", w.frame.missed.template == "GameTooltipText")
+  check("frame fits text", w.frame.size[1] == 120 and w.frame.size[2] == 152)
 end
 
 -- 16. Max level goes fully dormant: no ticker, no hot events.
@@ -893,6 +924,7 @@ do -- /vxp pause freezes the display; resume restarts the gate
   w.xp = 900
   xpEvent(w)
   check("resume no backfill", readout(w, "18k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
+  check("resume fresh eta", etaline(w) == "Next level: ~<1m")
 end
 
 -- 21. Slash toggles confirm with checkbox sounds (numeric fallback:
@@ -910,6 +942,144 @@ do
   slash("pause")
   slash("reset")
   check("toggle sounds", table.concat(w.sounds, ",") == "857,856,856,857,856,857,856")
+end
+
+-- 22. Missing-buff feedback: gray lines name what each gap is worth.
+do -- bare character sees every gap plus the rollup
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  check("missing full list", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+    .. "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)\n"
+    .. "Rested (rest in town)")
+end
+do -- partial stack shows only the gap
+  local w = newWorld()
+  w.warMode, w.rested = true, true
+  loadAddon(w)
+  clientLoaded(w)
+  check("missing gap only", missedline(w) == "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)")
+end
+do -- full stack hides the section and its space
+  local w = newWorld()
+  w.warMode, w.rested = true, true
+  w.auras[430191] = { points = { 20 } }
+  w.auras[46668], w.auras[136583] = {}, {}
+  w.auras[24705], w.auras[95987] = {}, {}
+  loadAddon(w)
+  clientLoaded(w)
+  check("missing hidden when full", missedline(w) == "")
+  check("missing frees space", w.frame.size[1] == 120 and w.frame.size[2] == 118)
+end
+do -- offered War Mode value follows Call to Arms
+  local w = newWorld()
+  w.warBonus = 15
+  loadAddon(w)
+  clientLoaded(w)
+  check("missing live offer", missedline(w) == "+15% War Mode (toggle in a capital)\n"
+    .. "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)\n"
+    .. "Rested (rest in town)")
+end
+do -- one Wickerman aura covers the neutral line
+  local w = newWorld()
+  w.auras[24705] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  check("wickerman covered", not (missedline(w) or ""):find("Wickerman", 1, true))
+end
+
+-- Darkmoon buffs are either/or: one active covers the other.
+do
+  local w = newWorld()
+  w.auras[46668] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  local missed = missedline(w) or ""
+  check("whee covers top hat", not missed:find("Top Hat", 1, true))
+  check("whee not recommended", not missed:find("WHEE!", 1, true))
+end
+do
+  local w = newWorld()
+  w.auras[136583] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  local missed = missedline(w) or ""
+  check("top hat covers whee", not missed:find("WHEE!", 1, true))
+  check("top hat not recommended", not missed:find("Top Hat", 1, true))
+end
+
+-- 23. ETA uses a longer-memory basis than the displayed rate.
+do -- unit: 15-minute window keeps what the 5-minute window drops
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local short = ns.newTracker(0)
+  local long = ns.newTracker(0, 900)
+  ns.addAward(short, 100, 6000)
+  ns.addAward(short, 200, 6000)
+  ns.addAward(long, 100, 6000)
+  ns.addAward(long, 200, 6000)
+  local est = ns.estimate(short, 600, { level = 10, xp = 0, req = 1000, capped = false }, false)
+  check("short window expired", est.status == "no-recent-xp" and est.etaSeconds == nil)
+  check("long window remembers", close(ns.etaSeconds(long, 600, 60000), 3000))
+end
+do -- dungeon burst: live rate spikes, ETA stays conservative
+  local w = newWorld()
+  w.max = 100000
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 5000
+  xpEvent(w)
+  w.now = w.now + 240
+  w.xp = 10000
+  xpEvent(w)
+  w.now = w.now + 300
+  w.xp = 60000
+  xpEvent(w)
+  check("burst rate spikes", readout(w, "600k XP/hr · last 5m", "No XP bonus", RED_C))
+  check("burst eta conservative", etaline(w) == "Next level: ~7m")
+end
+do -- stale long-window earnings never resurrect an ETA
+  local w = newWorld()
+  w.max = 100000
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 10
+  w.xp = 3600
+  xpEvent(w)
+  w.now = w.now + 400
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("stale eta stays null", etaline(w) == "No recent XP")
+end
+
+-- 24. Aura reads go blind in instances: verifiable lines stay, the
+-- rest becomes an honest note instead of false absence.
+do
+  local w = newWorld()
+  w.inInstance = true
+  w.warMode, w.rested = true, true
+  w.auras[430191] = { points = { 20 } }
+  w.auras[46668] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  check("instance active lines", readout(w, "Collecting data", "+10% War Mode\nRested", GREEN_C))
+  check("instance missing note", missedline(w) == "Aura scan unavailable in instances")
+end
+do
+  local w = newWorld()
+  w.inInstance = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("instance bare body", readout(w, "Collecting data", "No XP bonus", RED_C))
+  check("instance bare missing", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+    .. "Rested (rest in town)\n"
+    .. "Aura scan unavailable in instances")
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")

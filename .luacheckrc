@@ -22,7 +22,7 @@ globals = {
 -- WoW API and UI globals read by the addon.
 read_globals = {
   "C_PvP", "C_Sound", "C_Timer", "C_UnitAuras",
-  "CreateFrame", "GetTime", "GetXPExhaustion", "UIParent",
+  "CreateFrame", "GetTime", "GetXPExhaustion", "IsInInstance", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   "SOUNDKIT", -- presence-gated; click() falls back to numeric IDs
   -- VocDebug guest hook (our own addon, not a Blizzard API)

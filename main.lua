@@ -33,14 +33,15 @@ end
 -- persisted (monotonic timestamps die with the process).
 
 ns.WINDOW = 300 -- trailing window, seconds
+ns.ETA_WINDOW = 900 -- ETA basis window, seconds
 ns.GATE = 30 -- observation before estimates display, seconds
 
-function ns.newTracker(t0)
-  return { t0 = t0, events = {}, head = 1, sum = 0 }
+function ns.newTracker(t0, window)
+  return { t0 = t0, window = window or ns.WINDOW, events = {}, head = 1, sum = 0 }
 end
 
 local function cutoff(tr, now)
-  return math.max(tr.t0, now - ns.WINDOW)
+  return math.max(tr.t0, now - tr.window)
 end
 
 -- Drop events at or before the cutoff: awards exactly at t - W have
@@ -122,7 +123,7 @@ function ns.estimate(tr, now, snap, paused)
   local d, g = observe(tr, now)
   local est = {
     status = nil,
-    windowSeconds = ns.WINDOW,
+    windowSeconds = tr.window,
     observedSeconds = math.max(d, 0),
     windowXp = g,
     xpPerHour = nil,
@@ -157,13 +158,22 @@ function ns.estimate(tr, now, snap, paused)
     est.status = "no-recent-xp"
     return est
   end
-  if est.observedSeconds < ns.WINDOW then
+  if est.observedSeconds < tr.window then
     est.status = "warming-up"
   else
     est.status = "ready"
   end
   est.etaSeconds = est.remainingXp * d / g
   return est
+end
+
+-- ETA basis: the same awards over longer memory, so one-off bursts
+-- don't rewrite the forecast. Only used when the rate window holds
+-- earnings, so the longer sum is never empty here.
+function ns.etaSeconds(etaTr, now, remainingXp)
+  local d, g = observe(etaTr, now)
+  if d <= 0 or g <= 0 then return nil end
+  return remainingXp * d / g
 end
 
 function ns.formatObserved(d)
@@ -207,11 +217,13 @@ function ns.etaText(est)
 end
 
 -- Palette, defined once per the voc-addons skill: house gold for the
--- title and frame accent, soft red/green for bonus state only.
+-- title and frame accent, soft red/green for bonus state only,
+-- gray for the missing-buff section.
 local COLORS = {
   gold = { 1, 0.82, 0 },
   green = { 0.25, 1, 0.25 },
   red = { 1, 0.25, 0.25 },
+  muted = { 0.5, 0.5, 0.5 },
 }
 
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent, "BackdropTemplate")
@@ -239,14 +251,23 @@ local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 local eta = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 eta:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
 body:SetPoint("TOPLEFT", eta, "BOTTOMLEFT", 0, -4)
+local missed = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+missed:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -4)
+missed:SetTextColor(COLORS.muted[1], COLORS.muted[2], COLORS.muted[3])
 
--- Session state. The tracker and baseline live here, never in
+-- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
-local tracker = ns.newTracker(GetTime())
+local rateTracker = ns.newTracker(GetTime())
+local etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
 local baseline = nil
 local identity = nil
 local paused = false
 local lastBonusKey = nil -- VocDebug: emit only on bonus-set change
+
+local function resetTrackers()
+  rateTracker = ns.newTracker(GetTime())
+  etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
+end
 
 local function warMode()
   return type(C_PvP) == "table"
@@ -257,14 +278,18 @@ end
 -- The Enlisted buff starts at +10% but a Call to Arms for the
 -- player's faction raises it, so read the live value instead of
 -- hardcoding the base.
-local function warModeLabel()
-  if not warMode() then return nil end
+local function warModeOffered()
   local pct = 10
-  if type(C_PvP.GetWarModeRewardBonus) == "function" then
+  if type(C_PvP) == "table" and type(C_PvP.GetWarModeRewardBonus) == "function" then
     local v = C_PvP.GetWarModeRewardBonus()
     if type(v) == "number" and v >= 1 and v <= 100 then pct = v end
   end
-  return ("+%d%% War Mode"):format(pct)
+  return pct
+end
+
+local function warModePct()
+  if not warMode() then return nil end
+  return warModeOffered()
 end
 
 local function rested()
@@ -275,10 +300,10 @@ end
 -- coaster), Darkmoon Top Hat (separate aura, same +10%), Grim Visage /
 -- Unburdened (Hallow's End Wickerman, one per faction).
 local xpBuffs = {
-  { id = 46668, label = "+10% WHEE!" },
-  { id = 136583, label = "+10% Darkmoon Top Hat" },
-  { id = 24705, label = "+10% Grim Visage" },
-  { id = 95987, label = "+10% Unburdened" },
+  { id = 46668, label = "+10% WHEE!", pct = 10 },
+  { id = 136583, label = "+10% Darkmoon Top Hat", pct = 10 },
+  { id = 24705, label = "+10% Grim Visage", pct = 10 },
+  { id = 95987, label = "+10% Unburdened", pct = 10 },
 }
 
 local function playerAura(spellID)
@@ -306,35 +331,104 @@ local function hasAura(spellID) return playerAura(spellID) ~= nil end
 -- Warband Mentored Leveling scales 5-25% with max-level characters;
 -- the aura's first effect point carries the current value.
 local MENTORED_ID = 430191
-local function mentoredLabel()
+local function mentoredBonus()
   local aura = playerAura(MENTORED_ID)
   if not aura then return nil end
   local pct = aura.points and aura.points[1]
   if type(pct) == "number" and pct >= 1 and pct <= 100 then
-    return ("+%d%% Warband Mentored"):format(pct)
+    return ("+%d%% Warband Mentored"):format(pct), pct
   end
-  return "Warband Mentored"
+  return "Warband Mentored", nil
 end
 
+-- Aura reads go blind in instances (/dump-verified: the API returns
+-- nil there for present world-granted buffs), so both lists gate
+-- aura-derived lines on this and say so instead of false absence.
+local function inInstance()
+  if type(IsInInstance) ~= "function" then return false end
+  local inside = IsInInstance()
+  return inside == true
+end
+
+-- Highest value first; lines without a number trail in insertion
+-- order, so the sort is stable. Shared by the active and missing lists.
+local function sortByValue(parts)
+  table.sort(parts, function(a, b)
+    if (a.pct or -1) ~= (b.pct or -1) then return (a.pct or -1) > (b.pct or -1) end
+    return a.seq < b.seq
+  end)
+end
+
+-- Bonus lines, highest value first. Lines without a number (Rested,
+-- an unreadable Mentored value) trail in their usual order; ties keep
+-- insertion order, so the sort is stable.
 local function bonusParts()
   local parts = {}
-  local warModeBonus = warModeLabel()
-  if warModeBonus then parts[#parts + 1] = warModeBonus end
-  local mentored = mentoredLabel()
-  if mentored then parts[#parts + 1] = mentored end
-  for _, buff in ipairs(xpBuffs) do
-    if hasAura(buff.id) then parts[#parts + 1] = buff.label end
+  local function add(pct, label)
+    parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
-  if rested() then parts[#parts + 1] = "Rested" end
-  return parts
+  local wm = warModePct()
+  if wm then add(wm, ("+%d%% War Mode"):format(wm)) end
+  local restricted = inInstance()
+  local mentored, mentoredPct = nil, nil
+  if not restricted then mentored, mentoredPct = mentoredBonus() end
+  if mentored then add(mentoredPct, mentored) end
+  for _, buff in ipairs(xpBuffs) do
+    if not restricted and hasAura(buff.id) then add(buff.pct, buff.label) end
+  end
+  if rested() then add(nil, "Rested") end
+  sortByValue(parts)
+  local labels = {}
+  for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+  return labels
+end
+
+-- Buffs the player could be running but isn't: each names its value
+-- and a short how-to. Event buffs list
+-- year-round with their season tagged; no clean event-active check
+-- exists to gate them on. Buffs without a quotable value
+-- (Mentored) list with no number. Darkmoon's two buffs are
+-- either/or, so only WHEE! is ever recommended.
+local function missingParts()
+  local parts = {}
+  local function add(pct, label)
+    parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
+  end
+  if not warMode() then
+    local pct = warModeOffered()
+    add(pct, ("+%d%% War Mode (toggle in a capital)"):format(pct))
+  end
+  local restricted = inInstance()
+  if not restricted and not playerAura(MENTORED_ID) then
+    add(nil, "Warband Mentored (needs a max-level character)")
+  end
+  if not restricted and not hasAura(46668) and not hasAura(136583) then
+    add(10, "+10% WHEE! (Faire week)")
+  end
+  if not restricted and not hasAura(24705) and not hasAura(95987) then
+    add(10, "+10% Wickerman (Hallow's End)")
+  end
+  if not rested() then add(nil, "Rested (rest in town)") end
+  if restricted then add(nil, "Aura scan unavailable in instances") end
+  sortByValue(parts)
+  local labels = {}
+  for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+  return labels
 end
 
 local function refresh()
   local o = opts()
-  local est = ns.estimate(tracker, GetTime(), baseline, paused)
+  local now = GetTime()
+  local est = ns.estimate(rateTracker, now, baseline, paused)
   if est.status == "capped" then
     frame:SetShown(false)
     return
+  end
+  -- The ETA reads the longer basis (which also prunes it); the rate
+  -- window still gates whether any ETA shows at all.
+  local longEta = ns.etaSeconds(etaTracker, now, est.remainingXp or 0)
+  if est.etaSeconds and (est.remainingXp or 0) > 0 then
+    est.etaSeconds = longEta or est.etaSeconds
   end
   title:SetText(ns.titleText(est))
   eta:SetText(ns.etaText(est))
@@ -351,8 +445,18 @@ local function refresh()
     body:SetTextColor(COLORS.green[1], COLORS.green[2], COLORS.green[3])
     body:SetText(table.concat(bonuses, "\n"))
   end
+  local missing = missingParts()
+  if #missing == 0 then
+    missed:SetText("")
+  else
+    missed:SetText(table.concat(missing, "\n"))
+  end
   local w = math.max(title:GetStringWidth(), eta:GetStringWidth(), body:GetStringWidth())
   local h = title:GetStringHeight() + 4 + eta:GetStringHeight() + 4 + body:GetStringHeight()
+  if missed:GetText() ~= "" then
+    w = math.max(w, missed:GetStringWidth())
+    h = h + 4 + missed:GetStringHeight()
+  end
   frame:SetSize(w + 20, h + 20)
   frame:SetShown(o.shown)
 end
@@ -388,7 +492,13 @@ local function onXP()
   end
   if not paused then
     local gained = ns.gain(baseline, snap)
-    if gained then ns.addAward(tracker, GetTime(), gained) end
+    if gained then
+      local stamp = GetTime()
+      ns.addAward(rateTracker, stamp, gained)
+      if ns.addAward(etaTracker, stamp, gained) then
+        dbg("vocxp", "xp_award", ("gained=%d level=%d"):format(gained, snap.level))
+      end
+    end
   end
   baseline = snap
   refresh()
@@ -405,7 +515,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
       -- session: fresh window and a fresh observation gate. Zone loads
       -- on the same character keep history; travel is tracked time.
       identity = id
-      tracker = ns.newTracker(GetTime())
+      resetTrackers()
       paused = false
     end
     if snap.capped then baseline = snap shutdown() return end
@@ -457,14 +567,14 @@ SlashCmdList.VOCXP = function(msg)
     if not paused then
       -- Resume restarts observation: the paused interval holds no
       -- timestamped awards, so history cannot span it.
-      tracker = ns.newTracker(GetTime())
+      resetTrackers()
       baseline = readSnapshot()
     end
     refresh()
     click(paused)
     ns.say(paused and "paused." or "resumed.")
   elseif msg == "reset" then
-    tracker = ns.newTracker(GetTime())
+    resetTrackers()
     baseline = readSnapshot()
     paused = false
     refresh()
