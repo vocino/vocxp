@@ -1,0 +1,2 @@
+# Shell checks must stay LF to run under bash.
+*.sh text eol=lf
