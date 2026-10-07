@@ -2,7 +2,7 @@
 
 ## Code Map
 
-- `main.lua` — the whole addon: XP events, session rate, bonus list, tooltip readout
+- `main.lua` — the whole addon: rolling XP rate, time-to-level, bonus list, tooltip readout
 - `VocXP.toc` — addon metadata (`Interface: 120100`)
 - `VERSIONING.md` — tag-driven semver releases (same scheme as vocgear)
 - `tests/run.lua` — stub-harness regression tests (`lua tests/run.lua`)
@@ -28,7 +28,7 @@ Remove: `Remove-Item '<AddOns>\VocXP'` (link only — never `-Recurse`)
 
 - `local name, ns = ...` first line; module state on `ns`.
 - `VocXPDB` is the only addon-created global.
-- Slash: `/vxp` (toggle), `/vxp lock`, `/vxp reset`.
+- Slash: `/vxp` (toggle), `/vxp lock`, `/vxp pause`, `/vxp reset`.
 - Debugging follows `FAMILY.md` "Debugging": the `dbg` guest hook and
   the agent loop (`/vdbg mark`, `vocdebug since`).
 - Craft follows the `voc-addons` skill, the source of truth for how Voc

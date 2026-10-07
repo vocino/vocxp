@@ -22,8 +22,8 @@ globals = {
 -- WoW API and UI globals read by the addon.
 read_globals = {
   "C_PvP", "C_Timer", "C_UnitAuras",
-  "CreateFrame", "GetXPExhaustion", "UIParent",
-  "UnitXP", "UnitXPMax", "strtrim", "time",
+  "CreateFrame", "GetTime", "GetXPExhaustion", "UIParent",
+  "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   -- VocDebug guest hook (our own addon, not a Blizzard API)
   "VOCDBG",
 }

@@ -1,6 +1,6 @@
 local name, ns = ...
--- VocXP: session XP/hr plus active XP bonuses in one tiny readout.
--- Nothing else.
+-- VocXP: rolling XP/hr and time-to-level in one tiny readout, plus
+-- active XP bonuses. Nothing else.
 
 -- VocDebug guest hook: silent no-op unless the debug addon is loaded.
 local dbg = VOCDBG or function() end
@@ -14,6 +14,191 @@ local function opts()
     if ns.db[k] == nil then ns.db[k] = v end
   end
   return ns.db
+end
+
+local function fmt(n)
+  if n >= 1e6 then return ("%.1fm"):format(n / 1e6) end
+  if n >= 1e3 then return ("%.0fk"):format(n / 1e3) end
+  return ("%.0f"):format(n)
+end
+
+-- Rolling estimator -------------------------------------------------
+-- A trailing window over timestamped XP awards. All times are GetTime()
+-- seconds: one monotonic clock, never mixed with wall time, and never
+-- persisted (monotonic timestamps die with the process).
+
+ns.WINDOW = 300 -- trailing window, seconds
+ns.GATE = 30 -- observation before estimates display, seconds
+
+function ns.newTracker(t0)
+  return { t0 = t0, events = {}, head = 1, sum = 0 }
+end
+
+local function cutoff(tr, now)
+  return math.max(tr.t0, now - ns.WINDOW)
+end
+
+-- Drop events at or before the cutoff: awards exactly at t - W have
+-- expired, and an award stamped exactly at session start is a
+-- zero-elapsed-time boundary event, excluded the same way.
+local function prune(tr, now)
+  local c = cutoff(tr, now)
+  local evs = tr.events
+  while tr.head <= #evs and evs[tr.head].time <= c do
+    tr.sum = tr.sum - evs[tr.head].amount
+    tr.head = tr.head + 1
+  end
+  if tr.head > 256 then ns.compact(tr) end
+end
+
+-- Drop leading dead slots; timestamps and sums untouched.
+function ns.compact(tr)
+  if tr.head <= 1 then return end
+  local fresh = {}
+  for i = tr.head, #tr.events do fresh[#fresh + 1] = tr.events[i] end
+  tr.events, tr.head = fresh, 1
+end
+
+local function finite(v)
+  return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+end
+
+-- Awards are stamped at receipt on a monotonic clock, so receipt order
+-- is time order and the queue stays sorted by construction. Zero and
+-- non-finite amounts are ignored, never counted.
+function ns.addAward(tr, now, amount)
+  if not finite(now) or not finite(amount) or amount <= 0 then return false end
+  prune(tr, now)
+  tr.events[#tr.events + 1] = { time = now, amount = amount }
+  tr.sum = tr.sum + amount
+  return true
+end
+
+-- Read path: prune even with no new awards, then report the observed
+-- duration D and the in-window sum G.
+local function observe(tr, now)
+  prune(tr, now)
+  return now - cutoff(tr, now), tr.sum
+end
+
+-- A progression snapshot is one atomic read of level, XP in level,
+-- requirement, and the capped flag. Anything outside that shape is
+-- rejected, never displayed as a misleading estimate.
+function ns.validateSnapshot(snap)
+  if type(snap) ~= "table" then return false end
+  if type(snap.capped) ~= "boolean" then return false end
+  if not finite(snap.level) or not finite(snap.xp) then return false end
+  if snap.capped then return true end
+  if not finite(snap.req) or snap.req <= 0 then return false end
+  return snap.xp >= 0 and snap.xp <= snap.req
+end
+
+-- Reconstruct the XP gained between two snapshots. Same-level and
+-- single-level gains are exact. A multi-level jump has unknown
+-- intervening requirements, and a negative same-level delta is a
+-- resync, never a negative award: both return nil and add nothing.
+function ns.gain(old, new)
+  if not ns.validateSnapshot(old) or not ns.validateSnapshot(new) then return nil end
+  if new.capped then return nil end
+  if new.level == old.level then
+    if new.xp >= old.xp then return new.xp - old.xp end
+    return nil
+  elseif new.level == old.level + 1 then
+    return math.max(0, old.req - old.xp + new.xp)
+  end
+  return nil
+end
+
+-- One estimate from the current window and snapshot. XP/hour is the
+-- raw rolling rate whenever any time has been observed; the status
+-- gates what the ETA may claim. Unknown ETAs stay null with an
+-- explicit status; only a genuinely completed threshold reports zero.
+function ns.estimate(tr, now, snap, paused)
+  local d, g = observe(tr, now)
+  local est = {
+    status = nil,
+    windowSeconds = ns.WINDOW,
+    observedSeconds = math.max(d, 0),
+    windowXp = g,
+    xpPerHour = nil,
+    remainingXp = nil,
+    etaSeconds = nil,
+  }
+  if d > 0 then est.xpPerHour = g / d * 3600 end
+  if paused then
+    est.status = "paused"
+    return est
+  end
+  if type(snap) == "table" and snap.capped then
+    est.status = "capped"
+    est.xpPerHour = nil
+    return est
+  end
+  if not ns.validateSnapshot(snap) then
+    est.status = "unavailable"
+    return est
+  end
+  est.remainingXp = math.max(0, snap.req - snap.xp)
+  if est.remainingXp == 0 then
+    est.status = "awaiting-level-update"
+    est.etaSeconds = 0
+    return est
+  end
+  if est.observedSeconds < ns.GATE then
+    est.status = "collecting"
+    return est
+  end
+  if g == 0 then
+    est.status = "no-recent-xp"
+    return est
+  end
+  if est.observedSeconds < ns.WINDOW then
+    est.status = "warming-up"
+  else
+    est.status = "ready"
+  end
+  est.etaSeconds = est.remainingXp * d / g
+  return est
+end
+
+function ns.formatObserved(d)
+  local v = math.min(d, ns.WINDOW)
+  if v >= 60 then return ("%dm"):format(math.floor(v / 60)) end
+  return ("%ds"):format(math.floor(v))
+end
+
+function ns.titleText(est)
+  if est.status == "paused" then return "Paused" end
+  if est.status == "capped" then return "Max level" end
+  if est.status == "collecting" then return "Collecting data" end
+  local rate = est.xpPerHour
+  if rate == nil then return "Collecting data" end
+  local label = " · last " .. ns.formatObserved(est.observedSeconds)
+  if est.status == "warming-up" then label = label .. " · warming up" end
+  if rate == 0 then return "0 XP/hr" .. label end
+  return fmt(rate) .. " XP/hr" .. label
+end
+
+function ns.formatEta(sec)
+  if not finite(sec) then return "-" end
+  if sec < 60 then return "~<1m" end
+  local m = math.ceil(sec / 60)
+  local h = math.floor(m / 60)
+  local r = m % 60
+  if h == 0 then return ("~%dm"):format(m) end
+  if r == 0 then return ("~%dh"):format(h) end
+  return ("~%dh%02dm"):format(h, r)
+end
+
+function ns.etaText(est)
+  local s = est.status
+  if s == "paused" then return "Paused" end
+  if s == "capped" then return "Max level" end
+  if s == "unavailable" then return "Unavailable" end
+  if s == "awaiting-level-update" then return "Level complete; awaiting update" end
+  if s == "collecting" then return "Collecting data" end
+  if s == "no-recent-xp" then return "No recent XP" end
+  return "Next level: " .. ns.formatEta(est.etaSeconds)
 end
 
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent, "BackdropTemplate")
@@ -32,20 +217,22 @@ frame:SetBackdropBorderColor(1, 0.82, 0)
 -- Readout text. Tooltip text hierarchy, straight from the client's own
 -- templates (Blizzard_Fonts_Shared/Shared/FontStyles.xml): a header title
 -- line, then smaller body lines. Colors set separately via SetTextColor.
+-- The body is created before the ETA line so the headless stub (which
+-- tells same-template strings apart by creation order) routes them.
 local title = frame:CreateFontString(nil, "OVERLAY", "GameTooltipHeaderText")
 title:SetPoint("TOPLEFT", 10, -10)
 local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-body:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+local eta = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+eta:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+body:SetPoint("TOPLEFT", eta, "BOTTOMLEFT", 0, -4)
 
--- Session state.
-local sessionXP, sessionStart, lastXP, lastMax = 0, time(), 0, 0
+-- Session state. The tracker and baseline live here, never in
+-- SavedVariables: monotonic timestamps must not cross a reload.
+local tracker = ns.newTracker(GetTime())
+local baseline = nil
+local identity = nil
+local paused = false
 local lastBonusKey = nil -- VocDebug: emit only on bonus-set change
-
-local function fmt(n)
-  if n >= 1e6 then return ("%.1fm"):format(n / 1e6) end
-  if n >= 1e3 then return ("%.0fk"):format(n / 1e3) end
-  return ("%.0f"):format(n)
-end
 
 local function warMode()
   return type(C_PvP) == "table"
@@ -106,13 +293,13 @@ end
 
 local function refresh()
   local o = opts()
-  local maxed = (lastMax or 0) == 0
-  if maxed then
+  local est = ns.estimate(tracker, GetTime(), baseline, paused)
+  if est.status == "capped" then
     frame:SetShown(false)
     return
   end
-  local elapsed = math.max(time() - sessionStart, 1)
-  title:SetText(fmt(sessionXP / elapsed * 3600) .. " XP/hr")
+  title:SetText(ns.titleText(est))
+  eta:SetText(ns.etaText(est))
   local bonuses = bonusParts()
   local bonusKey = table.concat(bonuses, "|")
   if bonusKey ~= lastBonusKey then
@@ -126,8 +313,8 @@ local function refresh()
     body:SetTextColor(GREEN[1], GREEN[2], GREEN[3])
     body:SetText(table.concat(bonuses, "\n"))
   end
-  local w = math.max(title:GetStringWidth(), body:GetStringWidth())
-  local h = title:GetStringHeight() + 4 + body:GetStringHeight()
+  local w = math.max(title:GetStringWidth(), eta:GetStringWidth(), body:GetStringWidth())
+  local h = title:GetStringHeight() + 4 + eta:GetStringHeight() + 4 + body:GetStringHeight()
   frame:SetSize(w + 20, h + 20)
   frame:SetShown(o.shown)
 end
@@ -138,26 +325,34 @@ end
 local ticker
 local function shutdown()
   frame:SetShown(false)
+  paused = false
   if ticker then ticker:Cancel() ticker = nil end
   frame:UnregisterEvent("PLAYER_XP_UPDATE")
+  frame:UnregisterEvent("PLAYER_LEVEL_UP")
   frame:UnregisterEvent("UNIT_AURA")
 end
 
+local function readSnapshot()
+  local max = UnitXPMax("player")
+  return { level = UnitLevel("player"), xp = UnitXP("player"), req = max, capped = (max == 0) }
+end
+
+-- The XP bar is the single authoritative award source: each update
+-- reconstructs at most one gain from the snapshot delta and stamps it
+-- with the receipt time. Actual awarded XP already includes every
+-- bonus, so nothing is ever multiplied twice.
 local function onXP()
-  local xp, max = UnitXP("player"), UnitXPMax("player")
-  if max == 0 then
-    lastXP, lastMax = xp, max
+  local snap = readSnapshot()
+  if snap.capped then
+    baseline = snap
     shutdown()
     return
   end
-  if max and max > 0 then
-    if xp >= lastXP then
-      sessionXP = sessionXP + (xp - lastXP)
-    else
-      sessionXP = sessionXP + (lastMax - lastXP) + xp -- leveled up
-    end
+  if not paused then
+    local gained = ns.gain(baseline, snap)
+    if gained then ns.addAward(tracker, GetTime(), gained) end
   end
-  lastXP, lastMax = xp, max
+  baseline = snap
   refresh()
 end
 
@@ -165,22 +360,35 @@ frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:SetScript("OnEvent", function(_, event, arg1)
   if event == "PLAYER_ENTERING_WORLD" then
     ns.db = VocXPDB or ns.db -- client replaced the file-top table
-    lastXP, lastMax = UnitXP("player"), UnitXPMax("player")
-    if lastMax == 0 then shutdown() return end
-    sessionXP, sessionStart = 0, time()
+    local snap = readSnapshot()
+    local id = UnitGUID("player")
+    if id ~= identity or (baseline and baseline.capped) then
+      -- New character, first login, or waking from a dormant capped
+      -- session: fresh window and a fresh observation gate. Zone loads
+      -- on the same character keep history; travel is tracked time.
+      identity = id
+      tracker = ns.newTracker(GetTime())
+      paused = false
+    end
+    if snap.capped then baseline = snap shutdown() return end
+    baseline = snap -- zone loads carry no timestamped gains: resync, add nothing
     local o = opts()
     frame:ClearAllPoints()
     frame:SetPoint(o.point, UIParent, o.point, o.x, o.y)
     frame:RegisterEvent("PLAYER_XP_UPDATE")
+    frame:RegisterEvent("PLAYER_LEVEL_UP")
     frame:RegisterEvent("UNIT_AURA")
-    if not ticker then ticker = C_Timer.NewTicker(5, refresh) end
+    if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
     frame:EnableMouse(not o.locked)
   else
     if event == "UNIT_AURA" then
       if arg1 ~= "player" then return end
-    else
+    elseif event == "PLAYER_XP_UPDATE" then
       onXP()
     end
+    -- PLAYER_LEVEL_UP falls through to a bare re-render: the XP path
+    -- is the single authoritative award source, so a ding never adds
+    -- anything here and event order cannot double-count it.
   end
   refresh()
 end)
@@ -205,14 +413,26 @@ SlashCmdList.VOCXP = function(msg)
     o.locked = not o.locked
     frame:EnableMouse(not o.locked)
     print(name .. ": " .. (o.locked and "locked." or "unlocked. Drag to move."))
+  elseif msg == "pause" then
+    paused = not paused
+    if not paused then
+      -- Resume restarts observation: the paused interval holds no
+      -- timestamped awards, so history cannot span it.
+      tracker = ns.newTracker(GetTime())
+      baseline = readSnapshot()
+    end
+    refresh()
+    print(name .. ": " .. (paused and "paused." or "resumed."))
   elseif msg == "reset" then
-    sessionXP, sessionStart = 0, time()
+    tracker = ns.newTracker(GetTime())
+    baseline = readSnapshot()
+    paused = false
     refresh()
     print(name .. ": session reset.")
   else
     o.shown = not o.shown
     refresh()
-    if (lastMax or 0) == 0 then
+    if baseline and baseline.capped then
       print(name .. ": max level (stays hidden).")
     else
       print(name .. ": " .. (o.shown and "shown." or "hidden."))
