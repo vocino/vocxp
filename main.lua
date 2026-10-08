@@ -260,7 +260,7 @@ local etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
 local baseline = nil
 local identity = nil
 local paused = false
-local lastBonusKey = nil -- VocDebug: emit only on bonus-set change
+local lastBonusKey = nil -- emit only when the bonus set changes
 
 local function resetTrackers()
   rateTracker = ns.newTracker(GetTime())
