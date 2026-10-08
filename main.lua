@@ -2,8 +2,6 @@ local name, ns = ...
 -- VocXP: rolling XP/hr and time-to-level in one tiny readout, plus
 -- active XP bonuses. Nothing else.
 
--- VocDebug guest hook: silent no-op unless the debug addon is loaded.
-local dbg = VOCDBG or function() end
 
 VocXPDB = VocXPDB or {}
 ns.db = VocXPDB
@@ -436,7 +434,6 @@ local function refresh()
   local bonusKey = table.concat(bonuses, "|")
   if bonusKey ~= lastBonusKey then
     lastBonusKey = bonusKey
-    dbg("vocxp", "bonuses_changed", bonusKey == "" and "none" or bonusKey)
   end
   if #bonuses == 0 then
     body:SetTextColor(COLORS.red[1], COLORS.red[2], COLORS.red[3])
@@ -495,9 +492,7 @@ local function onXP()
     if gained then
       local stamp = GetTime()
       ns.addAward(rateTracker, stamp, gained)
-      if ns.addAward(etaTracker, stamp, gained) then
-        dbg("vocxp", "xp_award", ("gained=%d level=%d"):format(gained, snap.level))
-      end
+      ns.addAward(etaTracker, stamp, gained)
     end
   end
   baseline = snap

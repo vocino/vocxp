@@ -26,7 +26,6 @@ read_globals = {
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   "SOUNDKIT", -- presence-gated; click() falls back to numeric IDs
   -- VocDebug guest hook (our own addon, not a Blizzard API)
-  "VOCDBG",
 }
 
 files["tests/**"] = {

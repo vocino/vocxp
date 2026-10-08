@@ -29,8 +29,8 @@ Remove: `Remove-Item '<AddOns>\VocXP'` (link only — never `-Recurse`)
 - `local name, ns = ...` first line; module state on `ns`.
 - `VocXPDB` is the only addon-created global.
 - Slash: `/vxp` (toggle), `/vxp lock`, `/vxp pause`, `/vxp reset`.
-- Debugging follows `FAMILY.md` "Debugging": the `dbg` guest hook and
-  the agent loop (`/vdbg mark`, `vocdebug since`).
+- Debugging follows `FAMILY.md` "Debugging": !BugGrabber +
+  BugSack, errors read from `!BugGrabber.lua` after `/reload`.
 - Craft follows the `voc-addons` skill, the source of truth for how Voc
   addons look, feel, and behave; load it before UI, settings, tooltip,
   sound, or visual-polish work.
