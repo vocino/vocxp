@@ -12,8 +12,8 @@ A small tooltip-styled window. Drag it anywhere;
 it remembers where you put it.
 
 ```
-144k XP/hr · last 5m
-Next level: ~25m
+144k XP/hr · ~25m
+Last 10m
 +20% Warband Mentored
 +10% War Mode
 Rested
@@ -26,13 +26,20 @@ Rested
 /vxp reset  restart the session timer
 ```
 
-Line one is XP per hour over the trailing five minutes,
-refreshed every second. While the window fills it names what it
-has actually watched (`last 2m · warming up`); the first thirty
-seconds just say Collecting data. Line two forecasts the next
-level at your trailing-fifteen-minute pace, so one-off bursts
-don't rewrite the forecast — the tilde means approximate, never a
-promise. Below it, one line per active bonus: War Mode (live
+Line one is the payoff, refreshed every second: XP per hour
+over the trailing ten minutes, plus time to next level
+(`144k XP/hr · ~25m`). The forecast runs at your
+trailing-fifteen-minute pace, so one-off bursts don't rewrite
+it — the tilde means approximate, never a promise. Line two
+says how the headline was earned: `Last 10m` when steady;
+`Warming up · last 3m of 10m` while the window fills;
+`Idle 2m · last 10m` once a minute has passed with no gains;
+`Collecting data` for the first thirty seconds, while the
+headline shows pace alone; `No XP in the last 10m` when the
+window is empty, with the headline reading `0 XP/hr`.
+Warming up owns the second line until the window fills, so
+idle only ever appears beside a full window. Below it, one
+line per active bonus: War Mode (live
 Enlisted value, +10% base, higher under Call to Arms),
 Warband Mentored Leveling with your current %, WHEE! and Darkmoon
 Top Hat (+10%, Darkmoon, either/or), Grim Visage / Unburdened (+10%,
