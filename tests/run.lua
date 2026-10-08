@@ -199,7 +199,7 @@ do
   w.now = w.now + 1800
   w.xp = 500
   xpEvent(w)
-  check("rate text", readout(w, "3k XP/hr · ~15m", "No XP bonus", RED_C))
+  check("rate text", readout(w, "3k XP/hr · 15m", "No XP bonus", RED_C))
   check("rate sub", subline(w) == "Last 10m")
 end
 
@@ -212,7 +212,7 @@ do
   w.xp, w.max, w.level = 100, 2000, 11
   w.now = w.now + 3600
   xpEvent(w)
-  check("level-up carries", readout(w, "1k XP/hr · ~2h23m", "No XP bonus", RED_C))
+  check("level-up carries", readout(w, "1k XP/hr · 2h23m", "No XP bonus", RED_C))
   check("level-up sub", subline(w) == "Last 10m")
 end
 
@@ -333,11 +333,11 @@ do
   check("early gain collects", w.frame.title.text == "1.3m XP/hr" and subline(w) == "Collecting data")
   w.now = w.now + 290
   w.tickers[1].fn()
-  check("ticker holds window", readout(w, "43k XP/hr · ~2h14m", "No XP bonus", RED_C))
+  check("ticker holds window", readout(w, "43k XP/hr · 2h14m", "No XP bonus", RED_C))
   check("ticker sub", subline(w) == "Warming up · last 5m of 10m")
   w.now = w.now + 11
   w.tickers[1].fn()
-  check("ticker warming rate", readout(w, "42k XP/hr · ~2h19m", "No XP bonus", RED_C))
+  check("ticker warming rate", readout(w, "42k XP/hr · 2h19m", "No XP bonus", RED_C))
   check("ticker warming sub", subline(w) == "Warming up · last 5m of 10m")
   w.now = w.now + 300
   w.tickers[1].fn()
@@ -390,7 +390,7 @@ do
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
-  check("reset clears history", readout(w, "60k XP/hr · ~1h34m", "No XP bonus", RED_C))
+  check("reset clears history", readout(w, "60k XP/hr · 1h34m", "No XP bonus", RED_C))
   check("reset warming sub", subline(w) == "Warming up · last 1m of 10m")
 end
 
@@ -788,11 +788,11 @@ do
   local w = newWorld()
   local ns = loadAddon(w)
   check("ready title", ns.titleText({ status = "ready", xpPerHour = 144000, etaSeconds = 1500 })
-    == "144k XP/hr · ~25m")
+    == "144k XP/hr · 25m")
   check("warming title", ns.titleText({ status = "warming-up", xpPerHour = 120000, etaSeconds = 1800 })
-    == "120k XP/hr · ~30m")
+    == "120k XP/hr · 30m")
   check("idle title", ns.titleText({ status = "idle", xpPerHour = 42000, etaSeconds = 8000 })
-    == "42k XP/hr · ~2h14m")
+    == "42k XP/hr · 2h14m")
   check("zero title", ns.titleText({ status = "no-recent-xp", xpPerHour = 0, etaSeconds = nil })
     == "0 XP/hr")
   check("collecting pace title", ns.titleText({ status = "collecting", xpPerHour = 180000 }) == "180k XP/hr")
@@ -800,7 +800,7 @@ do
   check("paused title", ns.titleText({ status = "paused", xpPerHour = 1, observedSeconds = 1 }) == "Paused")
   check("unavailable title", ns.titleText({ status = "unavailable", xpPerHour = 30000 }) == "Unavailable")
   check("awaiting title", ns.titleText({ status = "awaiting-level-update", xpPerHour = 120000, etaSeconds = 0 })
-    == "120k XP/hr · ~<1m")
+    == "120k XP/hr · <1m")
   check("ready sub", ns.subText({ status = "ready", observedSeconds = 600, windowSeconds = 600 }) == "Last 10m")
   check("warming sub", ns.subText({ status = "warming-up", observedSeconds = 120, windowSeconds = 600 })
     == "Warming up · last 2m of 10m")
@@ -819,11 +819,11 @@ end
 do -- ETA formatting: sub-minute floor, upward rounding, hours as needed
   local w = newWorld()
   local ns = loadAddon(w)
-  check("eta sub-minute", ns.formatEta(30) == "~<1m" and ns.formatEta(59.9) == "~<1m")
-  check("eta minute", ns.formatEta(60) == "~1m")
-  check("eta rounds up", ns.formatEta(1501) == "~26m")
-  check("eta hour", ns.formatEta(3600) == "~1h")
-  check("eta hour minutes", ns.formatEta(3900) == "~1h05m" and ns.formatEta(7260) == "~2h01m")
+  check("eta sub-minute", ns.formatEta(30) == "<1m" and ns.formatEta(59.9) == "<1m")
+  check("eta minute", ns.formatEta(60) == "1m")
+  check("eta rounds up", ns.formatEta(1501) == "26m")
+  check("eta hour", ns.formatEta(3600) == "1h")
+  check("eta hour minutes", ns.formatEta(3900) == "1h05m" and ns.formatEta(7260) == "2h01m")
 end
 
 -- 19. Gain reconstruction from XP-bar snapshots.
@@ -854,7 +854,7 @@ do -- same-level gain becomes a timestamped award
   w.now = w.now + 60
   w.xp = 300
   xpEvent(w)
-  check("live rate", readout(w, "18k XP/hr · ~3m", "No XP bonus", RED_C))
+  check("live rate", readout(w, "18k XP/hr · 3m", "No XP bonus", RED_C))
   check("live sub", subline(w) == "Warming up · last 1m of 10m")
 end
 do -- level-up keeps history and snapshots the new level atomically
@@ -865,7 +865,7 @@ do -- level-up keeps history and snapshots the new level atomically
   w.now = w.now + 120
   w.xp, w.max, w.level = 100, 2000, 11
   xpEvent(w)
-  check("ding rate", readout(w, "6k XP/hr · ~19m", "No XP bonus", RED_C))
+  check("ding rate", readout(w, "6k XP/hr · 19m", "No XP bonus", RED_C))
   check("ding sub", subline(w) == "Warming up · last 2m of 10m")
 end
 do -- PLAYER_LEVEL_UP refreshes but never adds an award
@@ -902,7 +902,7 @@ do -- negative same-level delta resyncs, never a negative award
   w.now = w.now + 60
   w.xp = 500
   xpEvent(w)
-  check("resync rate", readout(w, "3k XP/hr · ~10m", "No XP bonus", RED_C))
+  check("resync rate", readout(w, "3k XP/hr · 10m", "No XP bonus", RED_C))
   check("resync sub", subline(w) == "Warming up · last 2m of 10m")
 end
 do -- zone load keeps history; character switch clears it
@@ -914,7 +914,7 @@ do -- zone load keeps history; character switch clears it
   xpEvent(w)
   w.now = w.now + 30
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("zone keeps history", readout(w, "12k XP/hr · ~4m", "No XP bonus", RED_C))
+  check("zone keeps history", readout(w, "12k XP/hr · 4m", "No XP bonus", RED_C))
   check("zone sub", subline(w) == "Warming up · last 1m of 10m")
   w.guid = "Player-11-0002"
   w.now = w.now + 5
@@ -942,7 +942,7 @@ do -- /vxp pause freezes the display; resume restarts the gate
   w.now = w.now + 60
   w.xp = 900
   xpEvent(w)
-  check("resume no backfill", readout(w, "18k XP/hr · ~<1m", "No XP bonus", RED_C))
+  check("resume no backfill", readout(w, "18k XP/hr · <1m", "No XP bonus", RED_C))
   check("resume fresh sub", subline(w) == "Warming up · last 1m of 10m")
 end
 
@@ -1061,7 +1061,7 @@ do -- dungeon burst: live rate spikes, ETA stays conservative
   w.now = w.now + 300
   w.xp = 60000
   xpEvent(w)
-  check("burst rate spikes", readout(w, "360k XP/hr · ~7m", "No XP bonus", RED_C))
+  check("burst rate spikes", readout(w, "360k XP/hr · 7m", "No XP bonus", RED_C))
   check("burst sub", subline(w) == "Last 10m")
 end
 do -- stale long-window earnings never resurrect an ETA
@@ -1117,7 +1117,7 @@ do -- 59s of quiet stays ready; 60s trips idle
   w.now = w.now + 1
   w.tickers[1].fn()
   check("quiet 60s idle", subline(w) == "Idle 1m · last 10m")
-  check("idle keeps payoff", w.frame.title.text == "360k XP/hr · ~7m")
+  check("idle keeps payoff", w.frame.title.text == "360k XP/hr · 7m")
 end
 do -- idle in a partial window still reads warming up
   local w = newWorld()
@@ -1130,7 +1130,7 @@ do -- idle in a partial window still reads warming up
   w.now = w.now + 120
   w.tickers[1].fn()
   check("warming owns partial idle", subline(w) == "Warming up · last 3m of 10m")
-  check("partial idle payoff", w.frame.title.text == "100k XP/hr · ~57m")
+  check("partial idle payoff", w.frame.title.text == "100k XP/hr · 57m")
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")

@@ -12,7 +12,7 @@ A small tooltip-styled window. Drag it anywhere;
 it remembers where you put it.
 
 ```
-144k XP/hr · ~25m
+144k XP/hr · 25m
 Last 10m
 +20% Warband Mentored
 +10% War Mode
@@ -28,9 +28,9 @@ Rested
 
 Line one is the payoff, refreshed every second: XP per hour
 over the trailing ten minutes, plus time to next level
-(`144k XP/hr · ~25m`). The forecast runs at your
+(`144k XP/hr · 25m`). The forecast runs at your
 trailing-fifteen-minute pace, so one-off bursts don't rewrite
-it — the tilde means approximate, never a promise. Line two
+it — a pace reading, never a promise. Line two
 says how the headline was earned: `Last 10m` when steady;
 `Warming up · last 3m of 10m` while the window fills;
 `Idle 2m · last 10m` once a minute has passed with no gains;

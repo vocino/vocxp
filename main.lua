@@ -230,13 +230,13 @@ end
 
 function ns.formatEta(sec)
   if not finite(sec) then return "-" end
-  if sec < 60 then return "~<1m" end
+  if sec < 60 then return "<1m" end
   local m = math.ceil(sec / 60)
   local h = math.floor(m / 60)
   local r = m % 60
-  if h == 0 then return ("~%dm"):format(m) end
-  if r == 0 then return ("~%dh"):format(h) end
-  return ("~%dh%02dm"):format(h, r)
+  if h == 0 then return ("%dm"):format(m) end
+  if r == 0 then return ("%dh"):format(h) end
+  return ("%dh%02dm"):format(h, r)
 end
 
 
