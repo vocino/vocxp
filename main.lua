@@ -30,9 +30,10 @@ end
 -- seconds: one monotonic clock, never mixed with wall time, and never
 -- persisted (monotonic timestamps die with the process).
 
-ns.WINDOW = 300 -- trailing window, seconds
+ns.WINDOW = 600 -- trailing rate window, seconds
 ns.ETA_WINDOW = 900 -- ETA basis window, seconds
 ns.GATE = 30 -- observation before estimates display, seconds
+ns.IDLE_AFTER = 60 -- quiet span before the rate admits staleness, seconds
 
 function ns.newTracker(t0, window)
   return { t0 = t0, window = window or ns.WINDOW, events = {}, head = 1, sum = 0 }
@@ -85,6 +86,15 @@ local function observe(tr, now)
   return now - cutoff(tr, now), tr.sum
 end
 
+-- Gap since the freshest surviving in-window award, or nil when the
+-- window holds nothing. Called after observe() has pruned, so the
+-- last element is the most recent award.
+local function lastAwardGap(tr, now)
+  local evs = tr.events
+  if #evs < tr.head then return nil end
+  return now - evs[#evs].time
+end
+
 -- A progression snapshot is one atomic read of level, XP in level,
 -- requirement, and the capped flag. Anything outside that shape is
 -- rejected, never displayed as a misleading estimate.
@@ -124,6 +134,7 @@ function ns.estimate(tr, now, snap, paused)
     windowSeconds = tr.window,
     observedSeconds = math.max(d, 0),
     windowXp = g,
+    idleSeconds = lastAwardGap(tr, now),
     xpPerHour = nil,
     remainingXp = nil,
     etaSeconds = nil,
@@ -152,16 +163,19 @@ function ns.estimate(tr, now, snap, paused)
     est.status = "collecting"
     return est
   end
-  if g == 0 then
+  if est.observedSeconds < tr.window then
+    -- Warming up owns the partial window whatever it holds: an empty
+    -- start still fills, and idleness only reads at full span.
+    est.status = "warming-up"
+  elseif g == 0 then
     est.status = "no-recent-xp"
     return est
-  end
-  if est.observedSeconds < tr.window then
-    est.status = "warming-up"
+  elseif est.idleSeconds ~= nil and est.idleSeconds >= ns.IDLE_AFTER then
+    est.status = "idle"
   else
     est.status = "ready"
   end
-  est.etaSeconds = est.remainingXp * d / g
+  if g > 0 then est.etaSeconds = est.remainingXp * d / g end
   return est
 end
 
@@ -183,13 +197,35 @@ end
 function ns.titleText(est)
   if est.status == "paused" then return "Paused" end
   if est.status == "capped" then return "Max level" end
-  if est.status == "collecting" then return "Collecting data" end
+  if est.status == "unavailable" then return "Unavailable" end
   local rate = est.xpPerHour
+  -- No pace exists yet on the very first paint (zero elapsed time).
   if rate == nil then return "Collecting data" end
-  local label = " · last " .. ns.formatObserved(est.observedSeconds)
-  if est.status == "warming-up" then label = label .. " · warming up" end
-  if rate == 0 then return "0 XP/hr" .. label end
-  return fmt(rate) .. " XP/hr" .. label
+  local head = fmt(rate) .. " XP/hr"
+  if est.etaSeconds == nil then return head end
+  return head .. " · " .. ns.formatEta(est.etaSeconds)
+end
+
+function ns.formatIdle(s)
+  return ("%dm"):format(math.max(1, math.floor(s / 60)))
+end
+
+function ns.subText(est)
+  local s = est.status
+  if s == "paused" then return "Tracking paused" end
+  if s == "capped" then return "Max level" end
+  if s == "unavailable" then return "Waiting for XP data" end
+  if s == "awaiting-level-update" then return "Level complete; awaiting update" end
+  if s == "collecting" then return "Collecting data" end
+  local span = ns.formatObserved(est.windowSeconds)
+  if s == "no-recent-xp" then return "No XP in the last " .. span end
+  if s == "warming-up" then
+    return "Warming up · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
+  end
+  if s == "idle" then
+    return "Idle " .. ns.formatIdle(est.idleSeconds or 0) .. " · last " .. span
+  end
+  return "Last " .. span
 end
 
 function ns.formatEta(sec)
@@ -203,16 +239,6 @@ function ns.formatEta(sec)
   return ("~%dh%02dm"):format(h, r)
 end
 
-function ns.etaText(est)
-  local s = est.status
-  if s == "paused" then return "Paused" end
-  if s == "capped" then return "Max level" end
-  if s == "unavailable" then return "Unavailable" end
-  if s == "awaiting-level-update" then return "Level complete; awaiting update" end
-  if s == "collecting" then return "Collecting data" end
-  if s == "no-recent-xp" then return "No recent XP" end
-  return "Next level: " .. ns.formatEta(est.etaSeconds)
-end
 
 -- Palette, defined once per the voc-addons skill: house gold for the
 -- title and frame accent, soft red/green for bonus state only,
@@ -240,15 +266,15 @@ frame:SetBackdropBorderColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
 -- Readout text. Tooltip text hierarchy, straight from the client's own
 -- templates (Blizzard_Fonts_Shared/Shared/FontStyles.xml): a header title
 -- line, then smaller body lines. Colors set separately via SetTextColor.
--- The body is created before the ETA line so the headless stub (which
+-- The body is created before the sub line so the headless stub (which
 -- tells same-template strings apart by creation order) routes them.
 local title = frame:CreateFontString(nil, "OVERLAY", "GameTooltipHeaderText")
 title:SetPoint("TOPLEFT", 10, -10)
 title:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
 local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-local eta = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-eta:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
-body:SetPoint("TOPLEFT", eta, "BOTTOMLEFT", 0, -4)
+local sub = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+body:SetPoint("TOPLEFT", sub, "BOTTOMLEFT", 0, -4)
 local missed = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 missed:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -4)
 missed:SetTextColor(COLORS.muted[1], COLORS.muted[2], COLORS.muted[3])
@@ -429,7 +455,7 @@ local function refresh()
     est.etaSeconds = longEta or est.etaSeconds
   end
   title:SetText(ns.titleText(est))
-  eta:SetText(ns.etaText(est))
+  sub:SetText(ns.subText(est))
   local bonuses = bonusParts()
   local bonusKey = table.concat(bonuses, "|")
   if bonusKey ~= lastBonusKey then
@@ -448,8 +474,8 @@ local function refresh()
   else
     missed:SetText(table.concat(missing, "\n"))
   end
-  local w = math.max(title:GetStringWidth(), eta:GetStringWidth(), body:GetStringWidth())
-  local h = title:GetStringHeight() + 4 + eta:GetStringHeight() + 4 + body:GetStringHeight()
+  local w = math.max(title:GetStringWidth(), sub:GetStringWidth(), body:GetStringWidth())
+  local h = title:GetStringHeight() + 4 + sub:GetStringHeight() + 4 + body:GetStringHeight()
   if missed:GetText() ~= "" then
     w = math.max(w, missed:GetStringWidth())
     h = h + 4 + missed:GetStringHeight()

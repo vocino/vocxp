@@ -86,12 +86,12 @@ local function loadAddon(world)
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
       -- Same-template strings route by creation order: main.lua creates
-      -- the body before the ETA line, so the first GameTooltipText is
-      -- the body and the second is the ETA line; a third is the
+      -- the body before the sub line, so the first GameTooltipText is
+      -- the body and the second is the sub line; a third is the
       -- missing-buff section.
       if tmpl == "GameTooltipHeaderText" then f.title = t
       elseif f.body == nil then f.body = t
-      elseif f.eta == nil then f.eta = t
+      elseif f.sub == nil then f.sub = t
       else f.missed = t end
       return t
     end
@@ -140,8 +140,8 @@ local function missedline(w)
   return w.frame.missed and w.frame.missed.text
 end
 
-local function etaline(w)
-  return w.frame.eta and w.frame.eta.text
+local function subline(w)
+  return w.frame.sub and w.frame.sub.text
 end
 
 -- Float-tolerant equality for rates and ETAs: exact for the integer
@@ -178,7 +178,7 @@ do
   check("fresh position defaults", ns.db.point == "CENTER" and ns.db.x == -340 and ns.db.y == 200)
   check("fresh frame shown", w.frame.shown == true)
   check("fresh frame mouse on", w.frame.mouse == true)
-  check("fresh collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
+  check("fresh collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
 end
 
 -- 3. Drag wiring (movable so OnDragStart can move the frame).
@@ -199,8 +199,8 @@ do
   w.now = w.now + 1800
   w.xp = 500
   xpEvent(w)
-  check("rate text", readout(w, "6k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("rate eta", etaline(w) == "Next level: ~15m")
+  check("rate text", readout(w, "3k XP/hr · ~15m", "No XP bonus", RED_C))
+  check("rate sub", subline(w) == "Last 10m")
 end
 
 -- 5. Level-up carries the remainder across the bar.
@@ -212,8 +212,8 @@ do
   w.xp, w.max, w.level = 100, 2000, 11
   w.now = w.now + 3600
   xpEvent(w)
-  check("level-up carries", readout(w, "2k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("level-up eta", etaline(w) == "Next level: ~2h23m")
+  check("level-up carries", readout(w, "1k XP/hr · ~2h23m", "No XP bonus", RED_C))
+  check("level-up sub", subline(w) == "Last 10m")
 end
 
 -- 6. Max-level characters never show the readout.
@@ -233,7 +233,7 @@ do -- cap raised later: next login wakes everything back up
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   check("cap raise reshows", w.frame.shown == true)
   check("cap raise restarts ticker", #w.tickers == 1)
-  check("cap raise collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
+  check("cap raise collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
 end
 do -- toggle at max level keeps the pref but says so
   local w = newWorld()
@@ -253,8 +253,8 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode line", readout(w, "0 XP/hr · last 1m", "+10% War Mode", GREEN_C))
-  check("war mode eta", etaline(w) == "No recent XP")
+  check("war mode line", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
+  check("war mode sub", subline(w) == "Warming up · last 1m of 10m")
 end
 do
   local w = newWorld()
@@ -263,7 +263,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("rested line", readout(w, "0 XP/hr · last 1m", "Rested", GREEN_C))
+  check("rested line", readout(w, "0 XP/hr", "Rested", GREEN_C))
 end
 do
   local w = newWorld()
@@ -272,7 +272,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses stack", readout(w, "0 XP/hr · last 1m", "+10% War Mode\nRested", GREEN_C))
+  check("bonuses stack", readout(w, "0 XP/hr", "+10% War Mode\nRested", GREEN_C))
 end
 do
   local w = newWorld()
@@ -280,7 +280,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no bonus line", readout(w, "0 XP/hr · last 1m", "No XP bonus", RED_C))
+  check("no bonus line", readout(w, "0 XP/hr", "No XP bonus", RED_C))
 end
 do -- Call to Arms raises the Enlisted value above the +10% base
   local w = newWorld()
@@ -289,7 +289,7 @@ do -- Call to Arms raises the Enlisted value above the +10% base
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode live value", readout(w, "0 XP/hr · last 1m", "+15% War Mode", GREEN_C))
+  check("war mode live value", readout(w, "0 XP/hr", "+15% War Mode", GREEN_C))
 end
 do
   local w = newWorld()
@@ -298,7 +298,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode high call", readout(w, "0 XP/hr · last 1m", "+30% War Mode", GREEN_C))
+  check("war mode high call", readout(w, "0 XP/hr", "+30% War Mode", GREEN_C))
 end
 do -- missing bonus API falls back to the +10% base
   local w = newWorld()
@@ -308,7 +308,7 @@ do -- missing bonus API falls back to the +10% base
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode fallback", readout(w, "0 XP/hr · last 1m", "+10% War Mode", GREEN_C))
+  check("war mode fallback", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
 end
 do -- out-of-range value is not trusted
   local w = newWorld()
@@ -317,7 +317,7 @@ do -- out-of-range value is not trusted
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode range gate", readout(w, "0 XP/hr · last 1m", "+10% War Mode", GREEN_C))
+  check("war mode range gate", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
 end
 
 -- 8. The ticker refreshes the rate between XP events.
@@ -330,15 +330,19 @@ do
   w.now = w.now + 10
   w.xp = 3600
   xpEvent(w)
-  check("early gain collects", w.frame.title.text == "Collecting data")
+  check("early gain collects", w.frame.title.text == "1.3m XP/hr" and subline(w) == "Collecting data")
   w.now = w.now + 290
   w.tickers[1].fn()
-  check("ticker holds window", readout(w, "43k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("ticker eta", etaline(w) == "Next level: ~2h14m")
+  check("ticker holds window", readout(w, "43k XP/hr · ~2h14m", "No XP bonus", RED_C))
+  check("ticker sub", subline(w) == "Warming up · last 5m of 10m")
   w.now = w.now + 11
   w.tickers[1].fn()
-  check("ticker expires award", readout(w, "0 XP/hr · last 5m", "No XP bonus", RED_C))
-  check("expired eta", etaline(w) == "No recent XP")
+  check("ticker warming rate", readout(w, "42k XP/hr · ~2h19m", "No XP bonus", RED_C))
+  check("ticker warming sub", subline(w) == "Warming up · last 5m of 10m")
+  w.now = w.now + 300
+  w.tickers[1].fn()
+  check("ticker expires award", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  check("expired sub", subline(w) == "No XP in the last 10m")
 end
 
 -- 9. /vxp toggles the readout.
@@ -381,12 +385,13 @@ do
   xpEvent(w)
   w.now = w.now + 100
   w.env.SlashCmdList.VOCXP("reset")
-  check("reset collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
+  check("reset collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
   check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset.")
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
-  check("reset clears history", readout(w, "60k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
+  check("reset clears history", readout(w, "60k XP/hr · ~1h34m", "No XP bonus", RED_C))
+  check("reset warming sub", subline(w) == "Warming up · last 1m of 10m")
 end
 
 -- 12. Dragging persists the position; locked drags don't move.
@@ -418,7 +423,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored line", readout(w, "0 XP/hr · last 1m", "+20% Warband Mentored", GREEN_C))
+  check("mentored line", readout(w, "0 XP/hr", "+20% Warband Mentored", GREEN_C))
 end
 do
   local w = newWorld()
@@ -427,7 +432,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("whee line", readout(w, "0 XP/hr · last 1m", "+10% WHEE!", GREEN_C))
+  check("whee line", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
 end
 do
   local w = newWorld()
@@ -436,7 +441,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("top hat line", readout(w, "0 XP/hr · last 1m", "+10% Darkmoon Top Hat", GREEN_C))
+  check("top hat line", readout(w, "0 XP/hr", "+10% Darkmoon Top Hat", GREEN_C))
 end
 do
   local w = newWorld()
@@ -445,7 +450,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("grim visage line", readout(w, "0 XP/hr · last 1m", "+10% Grim Visage", GREEN_C))
+  check("grim visage line", readout(w, "0 XP/hr", "+10% Grim Visage", GREEN_C))
 end
 do
   local w = newWorld()
@@ -454,7 +459,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("unburdened line", readout(w, "0 XP/hr · last 1m", "+10% Unburdened", GREEN_C))
+  check("unburdened line", readout(w, "0 XP/hr", "+10% Unburdened", GREEN_C))
 end
 do
   local w = newWorld()
@@ -464,7 +469,7 @@ do
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses sort by value", readout(w, "0 XP/hr · last 1m",
+  check("bonuses sort by value", readout(w, "0 XP/hr",
     "+20% Warband Mentored\n+10% War Mode\n+10% WHEE!\nRested", GREEN_C))
 end
 do -- highest bonus first across sources
@@ -475,7 +480,7 @@ do -- highest bonus first across sources
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses sort descending", readout(w, "0 XP/hr · last 1m",
+  check("bonuses sort descending", readout(w, "0 XP/hr",
     "+30% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested", GREEN_C))
 end
 do -- lines without a number trail the valued lines
@@ -486,7 +491,7 @@ do -- lines without a number trail the valued lines
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("unvalued lines trail", readout(w, "0 XP/hr · last 1m",
+  check("unvalued lines trail", readout(w, "0 XP/hr",
     "+10% War Mode\nWarband Mentored", GREEN_C))
 end
 do -- missing aura API degrades to no aura lines, no error
@@ -497,7 +502,7 @@ do -- missing aura API degrades to no aura lines, no error
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no aura api degrades", readout(w, "0 XP/hr · last 1m", "No XP bonus", RED_C))
+  check("no aura api degrades", readout(w, "0 XP/hr", "No XP bonus", RED_C))
 end
 
 do -- mentored without a readable value shows no number
@@ -507,7 +512,7 @@ do -- mentored without a readable value shows no number
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored fallback", readout(w, "0 XP/hr · last 1m", "Warband Mentored", GREEN_C))
+  check("mentored fallback", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
 end
 do -- out-of-range value is not trusted
   local w = newWorld()
@@ -516,7 +521,7 @@ do -- out-of-range value is not trusted
   clientLoaded(w)
   w.now = w.now + 60
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored range gate", readout(w, "0 XP/hr · last 1m", "Warband Mentored", GREEN_C))
+  check("mentored range gate", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
 end
 
 -- 14. Aura changes refresh the readout.
@@ -527,12 +532,13 @@ do
   check("unit_aura registered", w.frame.events.UNIT_AURA == true)
   w.now = w.now + 45
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no aura yet", readout(w, "0 XP/hr · last 45s", "No XP bonus", RED_C))
+  check("no aura yet", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  check("partial seconds sub", subline(w) == "Warming up · last 45s of 10m")
   w.auras[46668] = {}
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
-  check("other unit ignored", readout(w, "0 XP/hr · last 45s", "No XP bonus", RED_C))
+  check("other unit ignored", readout(w, "0 XP/hr", "No XP bonus", RED_C))
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("player aura refreshes", readout(w, "0 XP/hr · last 45s", "+10% WHEE!", GREEN_C))
+  check("player aura refreshes", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
 end
 
 -- 15. Tooltip frame styling and auto-fit.
@@ -546,7 +552,7 @@ do
   check("backdrop colors", w.frame.backdropColor[4] == 0.85 and w.frame.borderColor[1] == 1)
   check("title uses tooltip header font", w.frame.title.template == "GameTooltipHeaderText")
   check("body uses tooltip text font", w.frame.body.template == "GameTooltipText")
-  check("eta uses tooltip text font", w.frame.eta.template == "GameTooltipText")
+  check("sub uses tooltip text font", w.frame.sub.template == "GameTooltipText")
   local tc = w.frame.title.color or {}
   check("title is house gold", tc[1] == 1 and tc[2] == 0.82 and tc[3] == 0)
   check("missed uses tooltip text font", w.frame.missed.template == "GameTooltipText")
@@ -607,21 +613,21 @@ do -- read at session start: null rate and ETA, collecting
   check("start collecting", est.status == "collecting")
   check("start nulls", est.xpPerHour == nil and est.etaSeconds == nil)
   check("start zero observed", est.observedSeconds == 0 and est.windowXp == 0)
-  check("start window", est.windowSeconds == 300)
+  check("start window", est.windowSeconds == 600)
   check("start remaining", est.remainingXp == 1000)
 end
-do -- 12,000 XP in a full 300s window: 144,000/hr, ready
+do -- 12,000 XP in a full 600s window: 72,000/hr, ready
   local w = newWorld()
   local ns = loadAddon(w)
   local tr = ns.newTracker(0)
-  ns.addAward(tr, 100, 6000)
-  ns.addAward(tr, 200, 6000)
-  local est = ns.estimate(tr, 300, { level = 10, xp = 40000, req = 100000, capped = false }, false)
-  check("full rate", close(est.xpPerHour, 144000))
+  ns.addAward(tr, 500, 6000)
+  ns.addAward(tr, 590, 6000)
+  local est = ns.estimate(tr, 600, { level = 10, xp = 40000, req = 100000, capped = false }, false)
+  check("full rate", close(est.xpPerHour, 72000))
   check("full ready", est.status == "ready")
-  check("full window facts", est.windowXp == 12000 and est.observedSeconds == 300)
+  check("full window facts", est.windowXp == 12000 and est.observedSeconds == 600)
   check("full remaining", est.remainingXp == 60000)
-  check("full eta", close(est.etaSeconds, 1500))
+  check("full eta", close(est.etaSeconds, 3000))
 end
 do -- 4,000 XP after 120s: 120,000/hr over observed time, warming up
   local w = newWorld()
@@ -642,16 +648,18 @@ do -- award before the 30s gate: raw rate kept, estimate collecting
   check("early raw rate", close(est.xpPerHour, 180000))
   check("early collecting", est.status == "collecting" and est.etaSeconds == nil)
 end
-do -- silent past the gate: 0/hr, no recent XP
+do -- silent past the gate, partial window: 0/hr, still warming up
   local w = newWorld()
   local ns = loadAddon(w)
   local tr = ns.newTracker(0)
   local snap = { level = 10, xp = 0, req = 1000, capped = false }
   local est = ns.estimate(tr, 30, snap, false)
-  check("silent zero rate", est.status == "no-recent-xp" and est.xpPerHour == 0)
+  check("silent zero rate", est.status == "warming-up" and est.xpPerHour == 0)
   check("silent null eta", est.etaSeconds == nil)
   local early = ns.estimate(tr, 29, snap, false)
   check("gate boundary", early.status == "collecting" and early.xpPerHour == 0)
+  local full = ns.estimate(tr, 600, snap, false)
+  check("full silent", full.status == "no-recent-xp" and full.xpPerHour == 0)
 end
 do -- award exactly at the trailing cutoff expires; just newer survives
   local w = newWorld()
@@ -659,13 +667,13 @@ do -- award exactly at the trailing cutoff expires; just newer survives
   local snap = { level = 10, xp = 0, req = 1000, capped = false }
   local tr = ns.newTracker(0)
   ns.addAward(tr, 50, 700)
-  local est = ns.estimate(tr, 350, snap, false)
+  local est = ns.estimate(tr, 650, snap, false)
   check("cutoff excluded", est.windowXp == 0 and est.status == "no-recent-xp")
   local tr2 = ns.newTracker(0)
   ns.addAward(tr2, 51, 700)
-  local est2 = ns.estimate(tr2, 350, snap, false)
-  check("cutoff kept", est2.windowXp == 700 and close(est2.xpPerHour, 8400))
-  check("cutoff ready", est2.status == "ready")
+  local est2 = ns.estimate(tr2, 650, snap, false)
+  check("cutoff kept", est2.windowXp == 700 and close(est2.xpPerHour, 4200))
+  check("cutoff idle", est2.status == "idle")
 end
 do -- award at exactly session start is a zero-elapsed boundary: excluded
   local w = newWorld()
@@ -673,14 +681,14 @@ do -- award at exactly session start is a zero-elapsed boundary: excluded
   local tr = ns.newTracker(1000)
   ns.addAward(tr, 1000, 500)
   local est = ns.estimate(tr, 1060, { level = 10, xp = 0, req = 1000, capped = false }, false)
-  check("start boundary excluded", est.windowXp == 0 and est.status == "no-recent-xp")
+  check("start boundary excluded", est.windowXp == 0 and est.status == "warming-up")
 end
 do -- full window after the final award: 0/hr, null ETA
   local w = newWorld()
   local ns = loadAddon(w)
   local tr = ns.newTracker(0)
   ns.addAward(tr, 10, 1000)
-  local est = ns.estimate(tr, 400, { level = 10, xp = 0, req = 1000, capped = false }, false)
+  local est = ns.estimate(tr, 700, { level = 10, xp = 0, req = 1000, capped = false }, false)
   check("expired zero rate", est.status == "no-recent-xp" and est.xpPerHour == 0)
   check("expired null eta", est.etaSeconds == nil)
 end
@@ -754,9 +762,9 @@ do -- compaction preserves sums and rates
   ns.addAward(tr, 10, 100)
   ns.addAward(tr, 20, 200)
   ns.addAward(tr, 400, 300)
-  local before = ns.estimate(tr, 400, snap, false)
+  local before = ns.estimate(tr, 700, snap, false)
   ns.compact(tr)
-  local after = ns.estimate(tr, 400, snap, false)
+  local after = ns.estimate(tr, 700, snap, false)
   check("compact same sum", after.windowXp == before.windowXp and after.windowXp == 300)
   check("compact same rate", close(after.xpPerHour, before.xpPerHour))
   check("compact same status", after.status == before.status)
@@ -779,23 +787,34 @@ end
 do
   local w = newWorld()
   local ns = loadAddon(w)
-  check("ready title", ns.titleText({ status = "ready", xpPerHour = 144000, observedSeconds = 300 })
-    == "144k XP/hr · last 5m")
-  check("warming title", ns.titleText({ status = "warming-up", xpPerHour = 120000, observedSeconds = 120 })
-    == "120k XP/hr · last 2m · warming up")
-  check("zero title", ns.titleText({ status = "no-recent-xp", xpPerHour = 0, observedSeconds = 300 })
-    == "0 XP/hr · last 5m")
-  check("collecting title", ns.titleText({ status = "collecting", xpPerHour = 180000, observedSeconds = 10 })
-    == "Collecting data")
+  check("ready title", ns.titleText({ status = "ready", xpPerHour = 144000, etaSeconds = 1500 })
+    == "144k XP/hr · ~25m")
+  check("warming title", ns.titleText({ status = "warming-up", xpPerHour = 120000, etaSeconds = 1800 })
+    == "120k XP/hr · ~30m")
+  check("idle title", ns.titleText({ status = "idle", xpPerHour = 42000, etaSeconds = 8000 })
+    == "42k XP/hr · ~2h14m")
+  check("zero title", ns.titleText({ status = "no-recent-xp", xpPerHour = 0, etaSeconds = nil })
+    == "0 XP/hr")
+  check("collecting pace title", ns.titleText({ status = "collecting", xpPerHour = 180000 }) == "180k XP/hr")
+  check("collecting blank title", ns.titleText({ status = "collecting" }) == "Collecting data")
   check("paused title", ns.titleText({ status = "paused", xpPerHour = 1, observedSeconds = 1 }) == "Paused")
-  check("ready eta", ns.etaText({ status = "ready", etaSeconds = 1500 }) == "Next level: ~25m")
-  check("warming eta", ns.etaText({ status = "warming-up", etaSeconds = 1800 }) == "Next level: ~30m")
-  check("silent eta", ns.etaText({ status = "no-recent-xp" }) == "No recent XP")
-  check("collecting eta", ns.etaText({ status = "collecting" }) == "Collecting data")
-  check("awaiting eta", ns.etaText({ status = "awaiting-level-update", etaSeconds = 0 })
+  check("unavailable title", ns.titleText({ status = "unavailable", xpPerHour = 30000 }) == "Unavailable")
+  check("awaiting title", ns.titleText({ status = "awaiting-level-update", xpPerHour = 120000, etaSeconds = 0 })
+    == "120k XP/hr · ~<1m")
+  check("ready sub", ns.subText({ status = "ready", observedSeconds = 600, windowSeconds = 600 }) == "Last 10m")
+  check("warming sub", ns.subText({ status = "warming-up", observedSeconds = 120, windowSeconds = 600 })
+    == "Warming up · last 2m of 10m")
+  check("warming seconds sub", ns.subText({ status = "warming-up", observedSeconds = 45, windowSeconds = 600 })
+    == "Warming up · last 45s of 10m")
+  check("idle sub", ns.subText({ status = "idle", observedSeconds = 600, windowSeconds = 600, idleSeconds = 150 })
+    == "Idle 2m · last 10m")
+  check("silent sub", ns.subText({ status = "no-recent-xp", observedSeconds = 600, windowSeconds = 600 })
+    == "No XP in the last 10m")
+  check("collecting sub", ns.subText({ status = "collecting" }) == "Collecting data")
+  check("awaiting sub", ns.subText({ status = "awaiting-level-update" })
     == "Level complete; awaiting update")
-  check("unavailable eta", ns.etaText({ status = "unavailable" }) == "Unavailable")
-  check("paused eta", ns.etaText({ status = "paused" }) == "Paused")
+  check("unavailable sub", ns.subText({ status = "unavailable" }) == "Waiting for XP data")
+  check("paused sub", ns.subText({ status = "paused" }) == "Tracking paused")
 end
 do -- ETA formatting: sub-minute floor, upward rounding, hours as needed
   local w = newWorld()
@@ -835,8 +854,8 @@ do -- same-level gain becomes a timestamped award
   w.now = w.now + 60
   w.xp = 300
   xpEvent(w)
-  check("live rate", readout(w, "18k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
-  check("live eta", etaline(w) == "Next level: ~3m")
+  check("live rate", readout(w, "18k XP/hr · ~3m", "No XP bonus", RED_C))
+  check("live sub", subline(w) == "Warming up · last 1m of 10m")
 end
 do -- level-up keeps history and snapshots the new level atomically
   local w = newWorld()
@@ -846,8 +865,8 @@ do -- level-up keeps history and snapshots the new level atomically
   w.now = w.now + 120
   w.xp, w.max, w.level = 100, 2000, 11
   xpEvent(w)
-  check("ding rate", readout(w, "6k XP/hr · last 2m · warming up", "No XP bonus", RED_C))
-  check("ding eta", etaline(w) == "Next level: ~19m")
+  check("ding rate", readout(w, "6k XP/hr · ~19m", "No XP bonus", RED_C))
+  check("ding sub", subline(w) == "Warming up · last 2m of 10m")
 end
 do -- PLAYER_LEVEL_UP refreshes but never adds an award
   local w = newWorld()
@@ -868,8 +887,8 @@ do -- multi-level jump is unmeasurable: no invented gain
   w.now = w.now + 60
   w.level, w.xp, w.max = 12, 50, 3000
   xpEvent(w)
-  check("jump silent", readout(w, "0 XP/hr · last 1m", "No XP bonus", RED_C))
-  check("jump eta", etaline(w) == "No recent XP")
+  check("jump silent", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  check("jump sub", subline(w) == "Warming up · last 1m of 10m")
 end
 do -- negative same-level delta resyncs, never a negative award
   local w = newWorld()
@@ -879,12 +898,12 @@ do -- negative same-level delta resyncs, never a negative award
   w.now = w.now + 60
   w.xp = 400
   xpEvent(w)
-  check("negative silent", readout(w, "0 XP/hr · last 1m", "No XP bonus", RED_C))
+  check("negative silent", readout(w, "0 XP/hr", "No XP bonus", RED_C))
   w.now = w.now + 60
   w.xp = 500
   xpEvent(w)
-  check("resync rate", readout(w, "3k XP/hr · last 2m · warming up", "No XP bonus", RED_C))
-  check("resync eta", etaline(w) == "Next level: ~10m")
+  check("resync rate", readout(w, "3k XP/hr · ~10m", "No XP bonus", RED_C))
+  check("resync sub", subline(w) == "Warming up · last 2m of 10m")
 end
 do -- zone load keeps history; character switch clears it
   local w = newWorld()
@@ -895,12 +914,12 @@ do -- zone load keeps history; character switch clears it
   xpEvent(w)
   w.now = w.now + 30
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("zone keeps history", readout(w, "12k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
-  check("zone eta", etaline(w) == "Next level: ~4m")
+  check("zone keeps history", readout(w, "12k XP/hr · ~4m", "No XP bonus", RED_C))
+  check("zone sub", subline(w) == "Warming up · last 1m of 10m")
   w.guid = "Player-11-0002"
   w.now = w.now + 5
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("switch clears", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
+  check("switch clears", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
 end
 do -- /vxp pause freezes the display; resume restarts the gate
   local w = newWorld()
@@ -911,20 +930,20 @@ do -- /vxp pause freezes the display; resume restarts the gate
   w.xp = 300
   xpEvent(w)
   slash("pause")
-  check("pause display", w.frame.title.text == "Paused" and etaline(w) == "Paused")
+  check("pause display", w.frame.title.text == "Paused" and subline(w) == "Tracking paused")
   check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused.")
   w.now = w.now + 60
   w.xp = 600
   xpEvent(w)
   check("pause ignores awards", w.frame.title.text == "Paused")
   slash("pause")
-  check("resume collects", w.frame.title.text == "Collecting data" and etaline(w) == "Collecting data")
+  check("resume collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
   check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed.")
   w.now = w.now + 60
   w.xp = 900
   xpEvent(w)
-  check("resume no backfill", readout(w, "18k XP/hr · last 1m · warming up", "No XP bonus", RED_C))
-  check("resume fresh eta", etaline(w) == "Next level: ~<1m")
+  check("resume no backfill", readout(w, "18k XP/hr · ~<1m", "No XP bonus", RED_C))
+  check("resume fresh sub", subline(w) == "Warming up · last 1m of 10m")
 end
 
 -- 21. Slash toggles confirm with checkbox sounds (numeric fallback:
@@ -1015,7 +1034,7 @@ do
 end
 
 -- 23. ETA uses a longer-memory basis than the displayed rate.
-do -- unit: 15-minute window keeps what the 5-minute window drops
+do -- unit: 15-minute window keeps what the 10-minute window drops
   local w = newWorld()
   local ns = loadAddon(w)
   local short = ns.newTracker(0)
@@ -1024,9 +1043,9 @@ do -- unit: 15-minute window keeps what the 5-minute window drops
   ns.addAward(short, 200, 6000)
   ns.addAward(long, 100, 6000)
   ns.addAward(long, 200, 6000)
-  local est = ns.estimate(short, 600, { level = 10, xp = 0, req = 1000, capped = false }, false)
+  local est = ns.estimate(short, 900, { level = 10, xp = 0, req = 1000, capped = false }, false)
   check("short window expired", est.status == "no-recent-xp" and est.etaSeconds == nil)
-  check("long window remembers", close(ns.etaSeconds(long, 600, 60000), 3000))
+  check("long window remembers", close(ns.etaSeconds(long, 900, 60000), 4500))
 end
 do -- dungeon burst: live rate spikes, ETA stays conservative
   local w = newWorld()
@@ -1042,8 +1061,8 @@ do -- dungeon burst: live rate spikes, ETA stays conservative
   w.now = w.now + 300
   w.xp = 60000
   xpEvent(w)
-  check("burst rate spikes", readout(w, "600k XP/hr · last 5m", "No XP bonus", RED_C))
-  check("burst eta conservative", etaline(w) == "Next level: ~7m")
+  check("burst rate spikes", readout(w, "360k XP/hr · ~7m", "No XP bonus", RED_C))
+  check("burst sub", subline(w) == "Last 10m")
 end
 do -- stale long-window earnings never resurrect an ETA
   local w = newWorld()
@@ -1053,9 +1072,10 @@ do -- stale long-window earnings never resurrect an ETA
   w.now = w.now + 10
   w.xp = 3600
   xpEvent(w)
-  w.now = w.now + 400
+  w.now = w.now + 910
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("stale eta stays null", etaline(w) == "No recent XP")
+  check("stale eta stays null", subline(w) == "No XP in the last 10m")
+  check("stale title zero", w.frame.title.text == "0 XP/hr")
 end
 
 -- 24. Aura reads go blind in instances: verifiable lines stay, the
@@ -1080,6 +1100,37 @@ do
   check("instance bare missing", missedline(w) == "+10% War Mode (toggle in a capital)\n"
     .. "Rested (rest in town)\n"
     .. "Aura scan unavailable in instances")
+end
+
+-- 25. Idle status: a quiet minute in a full window admits staleness.
+do -- 59s of quiet stays ready; 60s trips idle
+  local w = newWorld()
+  w.max = 100000
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 541
+  w.xp = 60000
+  xpEvent(w)
+  w.now = w.now + 59
+  w.tickers[1].fn()
+  check("quiet 59s ready", subline(w) == "Last 10m")
+  w.now = w.now + 1
+  w.tickers[1].fn()
+  check("quiet 60s idle", subline(w) == "Idle 1m · last 10m")
+  check("idle keeps payoff", w.frame.title.text == "360k XP/hr · ~7m")
+end
+do -- idle in a partial window still reads warming up
+  local w = newWorld()
+  w.max = 100000
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 5000
+  xpEvent(w)
+  w.now = w.now + 120
+  w.tickers[1].fn()
+  check("warming owns partial idle", subline(w) == "Warming up · last 3m of 10m")
+  check("partial idle payoff", w.frame.title.text == "100k XP/hr · ~57m")
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")
