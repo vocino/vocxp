@@ -22,7 +22,10 @@ and `beta` in the tag name; a plain tag is a full release.
 ## Cutting a release
 
 1. Land the work on `main`.
-2. Tag and push: `git tag v1.2.3 && git push origin v1.2.3`.
+2. Tag and push: `git tag v1.2.3 && git push origin v1.2.3`. From
+   anywhere that cannot push tags (a cloud session, a phone), run the
+   `tag` workflow instead (Actions > tag > Run workflow, on `main`,
+   with the version): it creates the tag and starts the release.
 3. The workflow packages, uploads, and creates the GitHub Release.
 
 Tags are immutable: never move, delete, or re-push one. A broken

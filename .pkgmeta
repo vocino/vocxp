@@ -1,6 +1,7 @@
 package-as: VocXP
 
 ignore:
+  - .agents
   - .github
   - .luacheckrc
   - tests
