@@ -12,5 +12,6 @@
 ## X-Website: https://github.com/vocino/vocxp
 ## X-License: MIT
 ## X-Curse-Project-ID: 1730542
+## X-Wago-ID: nKWwOMKE
 
 main.lua
