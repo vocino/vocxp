@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v*"
+  # Dispatched at a tag by tag.yml; a tag pushed with the Actions token
+  # does not fire the push trigger above on its own.
+  workflow_dispatch:
 
 permissions:
   contents: write

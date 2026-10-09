@@ -1,15 +1,22 @@
 # VocXP
 
-## Problem
+Leveling an alt and wondering if your XP rate is any good, or whether
+you left War Mode off again. VocXP answers both with one tiny readout:
+XP per hour, time to the next level, and every XP bonus you are
+running, plus the ones you are missing and how to get them.
 
-Leveling an alt and wondering if your XP rate is any good, or
-whether you left War Mode off again. VocXP answers both with one
-tiny readout.
+## Install
+
+Download the latest zip from [GitHub
+Releases](https://github.com/vocino/vocxp/releases) (also on
+CurseForge), copy the folder into `Interface/AddOns`, and make sure
+it is named `VocXP` (the folder name must match the `.toc` file). The
+same package runs on Retail and on the Forever client.
 
 ## Use
 
-A small tooltip-styled window. Drag it anywhere;
-it remembers where you put it.
+A small tooltip-styled window. Drag it anywhere; it remembers where
+you put it. The addon compartment on the minimap toggles it too.
 
 ```
 144k XP/hr · 25m
@@ -20,17 +27,19 @@ Rested
 ```
 
 ```
-/vxp        show/hide
-/vxp lock   lock/unlock position
-/vxp pause  pause/resume tracking
-/vxp reset  restart the session timer
+/vxp           show or hide the readout
+/vxp lock      lock or unlock the position
+/vxp pause     pause or resume tracking
+/vxp reset     restart the session
+/vxp config    open Settings > AddOns > VocXP
+/vxp help      this list (/vocxp works too)
 ```
 
 Line one is the payoff, refreshed every second: XP per hour
 over the trailing ten minutes, plus time to next level
 (`144k XP/hr · 25m`). The forecast runs at your
 trailing-fifteen-minute pace, so one-off bursts don't rewrite
-it — a pace reading, never a promise. Line two
+it: a pace reading, never a promise. Line two
 says how the headline was earned: `Last 10m` when steady;
 `Warming up · last 3m of 10m` while the window fills;
 `Idle 2m · last 10m` once a minute has passed with no gains;
@@ -58,15 +67,51 @@ auras from addons, so aura lines pause there with an honest note
 instead of pretending your buffs expired; War Mode and Rested
 keep reporting live.
 
-Max-level characters never see the
-window at all, and the addon
+Max-level characters never see the window at all, and the addon
 runs no ticker and no XP, level, or aura event handlers for them.
+
+## Config
+
+Settings > AddOns > VocXP, or `/vxp config`:
+
+- Show the readout (default on)
+- Lock the position (default off)
+
+Both are the same switches the slash line flips, and every change
+applies at once.
+
+## How it works
+
+The XP bar is the single source of truth: every `PLAYER_XP_UPDATE`
+reconstructs one award from the snapshot delta and stamps it on a
+monotonic clock. A trailing ten-minute window gives the rate, a
+fifteen-minute window gives the forecast, and neither is ever
+persisted, so a reload starts an honest fresh session. Bonuses are
+read live from the client (War Mode, rested state, the mentored and
+holiday auras) and nothing is multiplied twice: awarded XP already
+includes every bonus.
 
 ## What's inside
 
-- `main.lua`: the whole addon - rolling XP rate, ETA, the readout
-- `VocXP.toc`: metadata
+- `main.lua`: the whole addon: rolling XP rate, ETA, bonus list, the readout, settings, slash
+- `VocXP.toc` / `VocXP_Forever.toc`: metadata for Retail and the Forever client
+- `tests/run.lua`: stub-harness regression tests, no WoW client needed
+
+## Tests
+
+```
+lua tests/run.lua
+luacheck .
+```
+
+## License
+
+MIT
 
 ---
 
 Part of the Voc family: tiny addons that do one job.
+[VocWarbank](https://github.com/vocino/vocwarbank) ·
+[VocGear](https://github.com/vocino/vocgear) ·
+[VocXP](https://github.com/vocino/vocxp) ·
+[VocVendor](https://github.com/vocino/vocvendor)
