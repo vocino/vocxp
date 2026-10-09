@@ -342,6 +342,26 @@ local function warModePct()
   return warModeOffered()
 end
 
+-- Client flavor. The client loads exactly one of our tocs (the 1.x
+-- VocXP_Forever.toc on Forever, the 12.x VocXP.toc on retail), so
+-- reading our own loaded Interface version back is literally asking
+-- what we're loaded into. Below 20000 is our classic-lineage toc;
+-- anything else keeps retail behavior, which is today's behavior
+-- everywhere, including flavors we ship no toc for (those clients
+-- fall back to the plain toc). An exact match on 16001 would break
+-- on the next beta bump; our own toc version moves with the client
+-- because we bump it with every Interface change. A missing API
+-- falls back to retail, never an error. C_AddOns.GetAddOnInterfaceVersion
+-- is documented on the live and forever branches.
+function ns.clientFlavor()
+  if type(C_AddOns) == "table"
+      and type(C_AddOns.GetAddOnInterfaceVersion) == "function" then
+    local v = C_AddOns.GetAddOnInterfaceVersion(name)
+    if type(v) == "number" and v < 20000 then return "forever" end
+  end
+  return "retail"
+end
+
 local function rested()
   return GetXPExhaustion() ~= nil
 end
@@ -429,28 +449,34 @@ end
 -- year-round with their season tagged; no clean event-active check
 -- exists to gate them on. Buffs without a quotable value
 -- (Mentored) list with no number. Darkmoon's two buffs are
--- either/or, so only WHEE! is ever recommended.
+-- either/or, so only WHEE! is ever recommended. On Forever only
+-- Rested is recommended: War Mode, Mentored, and the event buffs
+-- are unconfirmed there, so suggesting them would be guessing.
+-- Detection stays ungated on every client (a lit War Mode flag or
+-- a present aura is real anywhere); only these suggestions gate.
+-- Confirm more via beta /dumps and extend the gate below.
 local function missingParts()
   local parts = {}
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
-  if not warMode() then
+  local forever = ns.clientFlavor() == "forever"
+  if not forever and not warMode() then
     local pct = warModeOffered()
     add(pct, ("+%d%% War Mode (toggle in a capital)"):format(pct))
   end
   local restricted = inInstance()
-  if not restricted and not playerAura(MENTORED_ID) then
+  if not forever and not restricted and not playerAura(MENTORED_ID) then
     add(nil, "Warband Mentored (needs a max-level character)")
   end
-  if not restricted and not hasAura(46668) and not hasAura(136583) then
+  if not forever and not restricted and not hasAura(46668) and not hasAura(136583) then
     add(10, "+10% WHEE! (Faire week)")
   end
-  if not restricted and not hasAura(24705) and not hasAura(95987) then
+  if not forever and not restricted and not hasAura(24705) and not hasAura(95987) then
     add(10, "+10% Wickerman (Hallow's End)")
   end
   if not rested() then add(nil, "Rested (rest in town)") end
-  if restricted then add(nil, "Aura scan unavailable in instances") end
+  if restricted and not forever then add(nil, "Aura scan unavailable in instances") end
   sortByValue(parts)
   local labels = {}
   for _, p in ipairs(parts) do labels[#labels + 1] = p.label end

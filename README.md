@@ -67,6 +67,11 @@ auras from addons, so aura lines pause there with an honest note
 instead of pretending your buffs expired; War Mode and Rested
 keep reporting live.
 
+On World of Warcraft Forever only Rested is ever suggested: War
+Mode, Warband Mentored, and the event buffs are unconfirmed
+there, so the addon shows them when active but never recommends
+them. The rate and forecast work the same on both clients.
+
 Max-level characters never see the window at all, and the addon
 runs no ticker and no XP, level, or aura event handlers for them.
 
