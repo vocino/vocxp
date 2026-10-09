@@ -23,6 +23,7 @@ globals = {
 
 -- WoW API and UI globals read by the addon.
 read_globals = {
+  "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check (live + forever)
   "C_PvP", "C_Timer", "C_UnitAuras",
   "CreateFrame", "GameTooltip", "GetTime", "GetXPExhaustion", "IsInInstance",
   "Settings", "UIParent",

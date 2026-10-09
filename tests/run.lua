@@ -43,6 +43,12 @@ local function loadAddon(world)
     GetWarModeRewardBonus = function() return world.warBonus end,
   }
   g.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return world.auras[id] end }
+  g.C_AddOns = {
+    GetAddOnInterfaceVersion = function(n)
+      world.queriedAddon = n
+      return world.addonInterfaceVersion
+    end,
+  }
   g.IsInInstance = function() return world.inInstance end
   g.PlaySound = function(id) world.sounds[#world.sounds + 1] = id end
   g.GameTooltip = {
@@ -147,6 +153,7 @@ end
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
+           addonInterfaceVersion = 120100,
            printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil,
            gametip = { lines = {} }, withSettings = false, settingsReg = {},
            settingsChecks = 0, settingCallbacks = {} }
@@ -1254,6 +1261,83 @@ do
   clientLoaded(w)
   check("wrong-typed keys reset", ns.db.shown == true and ns.db.locked == false
     and ns.db.point == "CENTER" and ns.db.x == -340 and ns.db.y == 200)
+end
+
+-- 30. Client flavor: Forever recommends only what exists there.
+-- Detection reads our own loaded toc's Interface version (see
+-- ns.clientFlavor): 1.x is our Forever toc, 12.x our retail toc.
+do -- retail stays the default, querying our own addon entry
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("retail flavor", ns.clientFlavor() == "retail")
+  check("flavor queries own addon", w.queriedAddon == "VocXP")
+end
+do -- Forever: Rested is the only recommendation
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("forever missing rested only", missedline(w) == "Rested (rest in town)")
+  check("forever flavor", ns.clientFlavor() == "forever")
+end
+do -- Forever plus Rested: nothing missing, the section hides
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("forever rested hides missing", missedline(w) == "")
+end
+do -- Forever: a lit War Mode flag still shows -- detection is ungated,
+   -- only recommendations gate on flavor
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.warMode = true
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("forever war mode active", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
+  check("forever war mode unrecommended", missedline(w) == "Rested (rest in town)")
+end
+do -- Forever: a present aura still shows
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.auras[46668] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("forever whee active", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
+  check("forever whee unrecommended", not (missedline(w) or ""):find("WHEE!", 1, true))
+end
+do -- Forever in an instance: no scan note, no aura recs to explain
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.inInstance = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("forever instance quiet", missedline(w) == "Rested (rest in town)")
+end
+do -- missing version API falls back to retail, never errors
+  local w = newWorld()
+  loadAddon(w)
+  w.env.C_AddOns = {}
+  clientLoaded(w)
+  check("flavor fallback full list", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+    .. "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)\n"
+    .. "Rested (rest in town)")
+end
+do -- no C_AddOns at all: same retail fallback, silent
+  local w = newWorld()
+  loadAddon(w)
+  w.env.C_AddOns = nil
+  clientLoaded(w)
+  check("flavor nil fallback", w.ns.clientFlavor() == "retail")
+  check("flavor nil full list", (missedline(w) or ""):find("War Mode", 1, true) ~= nil)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")
