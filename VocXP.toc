@@ -1,11 +1,16 @@
 ## Interface: 120100
 ## Title: VocXP
-## Notes: Rolling XP/hr and time-to-level, plus active XP bonuses. Slash: /vxp.
+## Notes: Rolling XP/hr and time-to-level, plus active XP bonuses. (/vxp)
 ## Author: vocino
 ## Version: @project-version@
+## Category: Quests & Leveling
+## IconTexture: Interface\Icons\XP_Icon
 ## SavedVariables: VocXPDB
+## AddonCompartmentFunc: VocXP_CompartmentClick
+## AddonCompartmentFuncOnEnter: VocXP_CompartmentEnter
+## AddonCompartmentFuncOnLeave: VocXP_CompartmentLeave
 ## X-Website: https://github.com/vocino/vocxp
-## X-Curse-Project-ID: 1730542
 ## X-License: MIT
+## X-Curse-Project-ID: 1730542
 
 main.lua

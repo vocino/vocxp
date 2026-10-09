@@ -6,18 +6,54 @@ local name, ns = ...
 VocXPDB = VocXPDB or {}
 ns.db = VocXPDB
 
+-- Chat voice shared by every Voc addon (see FAMILY.md): one line, the
+-- addon name as a colored prefix, then the message.
 ns.PREFIX_COLOR = "ff66ccff" -- the family color, same everywhere
 function ns.say(msg)
   print("|c" .. ns.PREFIX_COLOR .. name .. "|r: " .. tostring(msg))
 end
 
+-- Confirmation sounds shared by every Voc addon (FAMILY.md "Sounds"):
+-- SOUNDKIT names first, the numeric IDs behind them so a Blizzard
+-- rename never silences the polish. Presence-gated: no sound API, no
+-- sound, never an error.
+ns.SOUNDS = {
+  on = { "IG_MAINMENU_OPTION_CHECKBOX_ON", 856 },
+  off = { "IG_MAINMENU_OPTION_CHECKBOX_OFF", 857 },
+  open = { "IG_MAINMENU_OPEN", 850 },
+  close = { "IG_MAINMENU_CLOSE", 851 },
+}
+function ns.play(kind)
+  local s = ns.SOUNDS[kind]
+  if not s or type(PlaySound) ~= "function" then return end
+  local id = type(SOUNDKIT) == "table" and SOUNDKIT[s[1]] or nil
+  pcall(PlaySound, type(id) == "number" and id or s[2])
+end
+
+-- Palette (FAMILY.md "Palette"), defined once: house gold for the title
+-- and frame accent, green and brick red for bonus state only, gray for
+-- the missing-buff section. Nothing paints a color at a call site.
+ns.COLORS = {
+  gold = { 1, 0.82, 0 },
+  text = { 1, 1, 1 },
+  muted = { 0.5, 0.5, 0.5 },
+  red = { 0.9, 0.3, 0.25 },
+  green = { 0.25, 0.9, 0.35 },
+}
+local COLORS = ns.COLORS
+
+-- Defaults: the single source of truth (FAMILY.md "Settings"). A key
+-- holding the wrong type resets; unknown keys are left alone.
 local defaults = { shown = true, locked = false, point = "CENTER", x = -340, y = 200 }
+ns.defaults = defaults
 local function opts()
+  if type(ns.db) ~= "table" then ns.db = {} VocXPDB = ns.db end
   for k, v in pairs(defaults) do
-    if ns.db[k] == nil then ns.db[k] = v end
+    if type(ns.db[k]) ~= type(v) then ns.db[k] = v end
   end
   return ns.db
 end
+ns.opts = opts
 
 local function fmt(n)
   if n >= 1e6 then return ("%.1fm"):format(n / 1e6) end
@@ -240,16 +276,6 @@ function ns.formatEta(sec)
 end
 
 
--- Palette, defined once per the voc-addons skill: house gold for the
--- title and frame accent, soft red/green for bonus state only,
--- gray for the missing-buff section.
-local COLORS = {
-  gold = { 1, 0.82, 0 },
-  green = { 0.25, 1, 0.25 },
-  red = { 1, 0.25, 0.25 },
-  muted = { 0.5, 0.5, 0.5 },
-}
-
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent, "BackdropTemplate")
 frame:SetSize(150, 32)
 frame:SetMovable(true)
@@ -336,18 +362,9 @@ local function playerAura(spellID)
   return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
 end
 
--- Checkbox toggle sounds (voc-addons principle 3): every slash toggle
--- confirms audibly. SOUNDKIT constants are primary; the numeric IDs
--- keep working across a Blizzard rename. Fully presence-gated: no
--- sound API, no sound, never an error.
+-- Every slash toggle confirms audibly (voc-addons principle 3).
 local function click(on)
-  if type(C_Sound) ~= "table" or type(C_Sound.PlaySound) ~= "function" then return end
-  local id
-  if type(SOUNDKIT) == "table" then
-    id = on and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON or SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_OFF
-  end
-  if type(id) ~= "number" then id = on and 856 or 857 end
-  C_Sound.PlaySound(id)
+  ns.play(on and "on" or "off")
 end
 
 local function hasAura(spellID) return playerAura(spellID) ~= nil end
@@ -525,10 +542,66 @@ local function onXP()
   refresh()
 end
 
+-- Blizzard Settings panel (Settings > AddOns > VocXP): the same two
+-- options the slash line toggles, bound to the live SavedVariables
+-- table so the panel and `/vxp` always agree, applied the moment they
+-- change. Built once, after SavedVariables land, and only if the
+-- Settings API is present.
+function ns.onSettingChanged(setting, fn)
+  if setting and type(setting.SetValueChangedCallback) == "function" then
+    setting:SetValueChangedCallback(fn)
+  end
+end
+
+local applyLock -- forward: the panel and the slash line share it
+
+ns.settingsBuilt = false
+function ns.ensureSettings()
+  if ns.settingsBuilt then return end
+  if type(Settings) ~= "table" then return end
+  if type(Settings.RegisterVerticalLayoutCategory) ~= "function" then return end
+  local category = Settings.RegisterVerticalLayoutCategory("VocXP")
+  Settings.RegisterAddOnCategory(category)
+  local db = opts() -- bound, defaulted table
+  local function check(key, label, tooltip, onChange)
+    local s = Settings.RegisterAddOnSetting(
+      category, "VocXP_" .. key, key, db, type(defaults[key]), label, defaults[key])
+    Settings.CreateCheckbox(category, s, tooltip)
+    ns.onSettingChanged(s, onChange)
+  end
+  check("shown", "Show the readout",
+    "Show XP/hr, time to level, and your active XP bonuses. Max-level characters never see it.",
+    function() refresh() end)
+  check("locked", "Lock the position",
+    "Keep the readout where it is. Unlocked, drag it anywhere; it remembers.",
+    function() applyLock() end)
+  ns.settingsBuilt = true
+  ns.settingsCategory = category
+end
+
+function ns.openConfig()
+  local ok = pcall(function() Settings.OpenToCategory(ns.settingsCategory:GetID()) end)
+  if not ok then ns.say("open Settings > AddOns > VocXP") end
+end
+
+frame:RegisterEvent("ADDON_LOADED")
+frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:SetScript("OnEvent", function(_, event, arg1)
-  if event == "PLAYER_ENTERING_WORLD" then
+  if event == "ADDON_LOADED" then
+    -- The client replaces the SavedVariables global with the loaded
+    -- table after our file ran, so rebind or settings never persist.
+    if arg1 ~= name then return end
+    if type(VocXPDB) ~= "table" then VocXPDB = {} end
+    ns.db = VocXPDB
+    ns.ensureSettings()
+    return
+  elseif event == "PLAYER_LOGIN" then
+    ns.ensureSettings() -- in case Settings wasn't up at ADDON_LOADED
+    return
+  elseif event == "PLAYER_ENTERING_WORLD" then
     ns.db = VocXPDB or ns.db -- client replaced the file-top table
+    ns.ensureSettings()
     local snap = readSnapshot()
     local id = UnitGUID("player")
     if id ~= identity or (baseline and baseline.capped) then
@@ -548,7 +621,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     frame:RegisterEvent("PLAYER_LEVEL_UP")
     frame:RegisterEvent("UNIT_AURA")
     if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
-    frame:EnableMouse(not o.locked)
+    applyLock()
   else
     if event == "UNIT_AURA" then
       if arg1 ~= "player" then return end
@@ -574,15 +647,84 @@ frame:SetScript("OnDragStop", function()
   o.point, o.x, o.y = point, x, y
 end)
 
+-- The one main action: show or hide the readout. Shared by the bare
+-- slash command and the addon compartment.
+function ns.toggle()
+  local o = opts()
+  o.shown = not o.shown
+  refresh()
+  if baseline and baseline.capped then
+    ns.say("max level (stays hidden)")
+  else
+    ns.play(o.shown and "open" or "close")
+    ns.say(o.shown and "shown" or "hidden")
+  end
+end
+
+-- Lock state applied to the frame; the panel's callback and the slash
+-- line both route here so the two can never disagree.
+function applyLock()
+  frame:EnableMouse(not opts().locked)
+end
+
+function ns.setLocked(on)
+  local o = opts()
+  o.locked = on
+  applyLock()
+  click(o.locked)
+  ns.say(o.locked and "locked" or "unlocked, drag to move")
+end
+
+-- Addon compartment (FAMILY.md "Addon compartment"): the toc names
+-- these three globals; Blizzard's compartment menu calls them with
+-- (addonName, button). Click does what the bare slash does; hover
+-- follows the tooltip contract: gold title, one line, the slash hint.
+function VocXP_CompartmentClick()
+  ns.toggle()
+end
+
+function VocXP_CompartmentEnter(_, button)
+  if type(GameTooltip) ~= "table" then return end
+  GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+  GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+  GameTooltip:AddLine("Session XP/hr and active XP bonuses in one tiny readout.",
+    COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
+    COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  GameTooltip:Show()
+end
+
+function VocXP_CompartmentLeave()
+  if type(GameTooltip) == "table" then GameTooltip:Hide() end
+end
+
+-- Slash grammar shared by every Voc addon (FAMILY.md): the bare command
+-- does the one main thing, `config` opens the panel, `help` lists the
+-- rest, and anything unrecognized prints help instead of acting.
+ns.HELP = {
+  "/vxp           show or hide the readout",
+  "/vxp lock      lock or unlock the position",
+  "/vxp pause     pause or resume tracking",
+  "/vxp reset     restart the session",
+  "/vxp config    open Settings > AddOns > VocXP",
+  "/vxp help      this list (/vocxp works too)",
+}
+
+function ns.help()
+  ns.say("commands")
+  for _, line in ipairs(ns.HELP) do print("  " .. line) end
+end
+
+-- Blizzard's slash dispatcher reads SLASH_* globals by name, so these
+-- cannot be namespaced (they are declared in .luacheckrc instead).
 SLASH_VOCXP1 = "/vxp"
+SLASH_VOCXP2 = "/vocxp"
 SlashCmdList.VOCXP = function(msg)
   msg = strtrim(msg or ""):lower()
-  local o = opts()
-  if msg == "lock" then
-    o.locked = not o.locked
-    frame:EnableMouse(not o.locked)
-    click(o.locked)
-    ns.say(o.locked and "locked." or "unlocked. Drag to move.")
+  if msg == "" then
+    ns.toggle()
+  elseif msg == "lock" then
+    ns.setLocked(not opts().locked)
   elseif msg == "pause" then
     paused = not paused
     if not paused then
@@ -593,22 +735,17 @@ SlashCmdList.VOCXP = function(msg)
     end
     refresh()
     click(paused)
-    ns.say(paused and "paused." or "resumed.")
+    ns.say(paused and "paused" or "resumed")
   elseif msg == "reset" then
     resetTrackers()
     baseline = readSnapshot()
     paused = false
     refresh()
     click(true)
-    ns.say("session reset.")
+    ns.say("session reset")
+  elseif msg == "config" then
+    ns.openConfig()
   else
-    o.shown = not o.shown
-    refresh()
-    if baseline and baseline.capped then
-      ns.say("max level (stays hidden).")
-    else
-      click(o.shown)
-      ns.say(o.shown and "shown." or "hidden.")
-    end
+    ns.help()
   end
 end

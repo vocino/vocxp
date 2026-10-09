@@ -16,8 +16,8 @@ local function check(name, cond)
 end
 
 -- Expected readout: title line, body lines, body color.
-local GREEN_C = { 0.25, 1, 0.25 }
-local RED_C = { 1, 0.25, 0.25 }
+local GREEN_C = { 0.25, 0.9, 0.35 }
+local RED_C = { 0.9, 0.3, 0.25 }
 local function readout(w, title, body, c)
   local bc = w.frame.body.color or {}
   return w.frame.title.text == title
@@ -44,7 +44,32 @@ local function loadAddon(world)
   }
   g.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return world.auras[id] end }
   g.IsInInstance = function() return world.inInstance end
-  g.C_Sound = { PlaySound = function(id) world.sounds[#world.sounds + 1] = id end }
+  g.PlaySound = function(id) world.sounds[#world.sounds + 1] = id end
+  g.GameTooltip = {
+    SetOwner = function(_, owner, anchor) world.gametip.owner, world.gametip.anchor = owner, anchor end,
+    SetText = function(_, t, r, gg, b) world.gametip.title = t world.gametip.titleColor = { r, gg, b } end,
+    AddLine = function(_, t) world.gametip.lines[#world.gametip.lines + 1] = t end,
+    Show = function() world.gametip.shown = true end,
+    Hide = function() world.gametip.shown = false end,
+  }
+  if world.withSettings then
+    local S = {}
+    S.RegisterVerticalLayoutCategory = function(n)
+      world.settingsCat = n
+      return { GetID = function() return 42 end }
+    end
+    S.RegisterAddOnCategory = function() world.settingsCatRegistered = true end
+    S.RegisterAddOnSetting = function(_, var, key, tbl, typ, label, default)
+      world.settingsReg[#world.settingsReg + 1] =
+        { var = var, key = key, tbl = tbl, type = typ, label = label, default = default }
+      local s = {}
+      s.SetValueChangedCallback = function(_, fn) world.settingCallbacks[var] = fn end
+      return s
+    end
+    S.CreateCheckbox = function() world.settingsChecks = world.settingsChecks + 1 end
+    S.OpenToCategory = function(id) world.openedCategory = id end
+    g.Settings = S
+  end
   g.C_Timer = {
     NewTicker = function(secs, fn)
       local t = { secs = secs, fn = fn }
@@ -122,7 +147,9 @@ end
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
-           printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil }
+           printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil,
+           gametip = { lines = {} }, withSettings = false, settingsReg = {},
+           settingsChecks = 0, settingCallbacks = {} }
 end
 
 -- Simulate the client deserializing SavedVariables (a FRESH table replaces
@@ -242,7 +269,7 @@ do -- toggle at max level keeps the pref but says so
   clientLoaded(w)
   w.env.SlashCmdList.VOCXP("")
   check("max toggle stays hidden", w.frame.shown == false)
-  check("max toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden).")
+  check("max toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden)")
 end
 
 -- 7. Bonus lines.
@@ -351,13 +378,14 @@ do
   loadAddon(w)
   clientLoaded(w)
   check("slash registered", w.env.SLASH_VOCXP1 == "/vxp" and w.env.SlashCmdList.VOCXP ~= nil)
+  check("long slash registered", w.env.SLASH_VOCXP2 == "/vocxp" and w.env.SLASH_VOCXP3 == nil)
   local slash = w.env.SlashCmdList.VOCXP
   slash("")
   check("slash hides", w.frame.shown == false)
-  check("slash hide announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: hidden.")
+  check("slash hide announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: hidden")
   slash("")
   check("slash shows", w.frame.shown == true)
-  check("slash show announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: shown.")
+  check("slash show announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: shown")
 end
 
 -- 10. /vxp lock toggles mouse input.
@@ -368,10 +396,10 @@ do
   local slash = w.env.SlashCmdList.VOCXP
   slash("lock")
   check("lock disables mouse", w.frame.mouse == false)
-  check("lock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: locked.")
+  check("lock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: locked")
   slash("  LOCK  ")
   check("lock toggles back", w.frame.mouse == true)
-  check("unlock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: unlocked. Drag to move.")
+  check("unlock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: unlocked, drag to move")
 end
 
 -- 11. /vxp reset zeroes the session.
@@ -386,7 +414,7 @@ do
   w.now = w.now + 100
   w.env.SlashCmdList.VOCXP("reset")
   check("reset collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
-  check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset.")
+  check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset")
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
@@ -931,14 +959,14 @@ do -- /vxp pause freezes the display; resume restarts the gate
   xpEvent(w)
   slash("pause")
   check("pause display", w.frame.title.text == "Paused" and subline(w) == "Tracking paused")
-  check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused.")
+  check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused")
   w.now = w.now + 60
   w.xp = 600
   xpEvent(w)
   check("pause ignores awards", w.frame.title.text == "Paused")
   slash("pause")
   check("resume collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
-  check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed.")
+  check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed")
   w.now = w.now + 60
   w.xp = 900
   xpEvent(w)
@@ -946,8 +974,9 @@ do -- /vxp pause freezes the display; resume restarts the gate
   check("resume fresh sub", subline(w) == "Warming up · last 1m of 10m")
 end
 
--- 21. Slash toggles confirm with checkbox sounds (numeric fallback:
--- the harness provides no SOUNDKIT table).
+-- 21. Slash toggles confirm with sounds: open/close for the readout,
+-- the checkbox pair for lock, pause, and reset (numeric fallback: the
+-- harness provides no SOUNDKIT table).
 do
   local w = newWorld()
   loadAddon(w)
@@ -960,7 +989,16 @@ do
   slash("pause")
   slash("pause")
   slash("reset")
-  check("toggle sounds", table.concat(w.sounds, ",") == "857,856,856,857,856,857,856")
+  check("toggle sounds", table.concat(w.sounds, ",") == "851,850,856,857,856,857,856")
+  w.env.SOUNDKIT = { IG_MAINMENU_OPEN = 1850, IG_MAINMENU_CLOSE = 1851 }
+  w.sounds = {}
+  slash("")
+  slash("")
+  check("SOUNDKIT names win over the fallback", table.concat(w.sounds, ",") == "1851,1850")
+  w.env.PlaySound = nil
+  w.sounds = {}
+  slash("") -- no sound API: silent, never an error
+  check("no sound API is silent", #w.sounds == 0)
 end
 
 -- 22. Missing-buff feedback: gray lines name what each gap is worth.
@@ -1131,6 +1169,91 @@ do -- idle in a partial window still reads warming up
   w.tickers[1].fn()
   check("warming owns partial idle", subline(w) == "Warming up · last 3m of 10m")
   check("partial idle payoff", w.frame.title.text == "100k XP/hr · 57m")
+end
+
+-- 26. Slash grammar (FAMILY.md): help lists every subcommand, an
+-- unknown subcommand prints help and never toggles, config opens the
+-- panel or says where it lives.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local slash = w.env.SlashCmdList.VOCXP
+  local before = #w.printed
+  slash("help")
+  check("/vxp help lists every command", #w.printed == before + 1 + #ns.HELP)
+  check("help names config and help last",
+    ns.HELP[#ns.HELP - 1]:find("^/vxp config") ~= nil and ns.HELP[#ns.HELP]:find("^/vxp help") ~= nil
+    and ns.HELP[#ns.HELP]:find("/vocxp works too", 1, true) ~= nil)
+  before = #w.printed
+  slash("lokc") -- typo: help, never an action
+  check("unknown subcommand prints help", #w.printed == before + 1 + #ns.HELP)
+  check("unknown subcommand never toggles", w.frame.shown == true and ns.db.locked == false)
+  slash("config")
+  check("/vxp config prints the path without Settings",
+    w.printed[#w.printed] == "|cff66ccffVocXP|r: open Settings > AddOns > VocXP")
+end
+
+-- 27. Native Settings panel: both options, bound to the live table,
+-- applied the moment they change.
+do
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = {}
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("settings built at ADDON_LOADED", ns.settingsBuilt == true)
+  check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
+  local keys = {}
+  for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
+  check("shown and locked registered", keys.shown ~= nil and keys.locked ~= nil and #w.settingsReg == 2)
+  check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB)
+  check("two checkboxes", w.settingsChecks == 2)
+  check("defaults match", keys.shown.default == true and keys.locked.default == false)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("built once", #w.settingsReg == 2)
+  ns.db.shown = false
+  w.settingCallbacks["VocXP_shown"]()
+  check("shown applies live", w.frame.shown == false)
+  ns.db.locked = true
+  w.settingCallbacks["VocXP_locked"]()
+  check("locked applies live", w.frame.mouse == false)
+  w.env.SlashCmdList.VOCXP("config")
+  check("/vxp config opens the category", w.openedCategory == 42)
+end
+
+-- 28. Addon compartment: click does what the bare slash does; hover
+-- follows the tooltip contract (gold title, one line, the slash hint).
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  check("compartment globals", type(w.env.VocXP_CompartmentClick) == "function"
+    and type(w.env.VocXP_CompartmentEnter) == "function"
+    and type(w.env.VocXP_CompartmentLeave) == "function")
+  w.env.VocXP_CompartmentClick("VocXP", "LeftButton")
+  check("compartment click hides", w.frame.shown == false and w.sounds[#w.sounds] == 851)
+  w.env.VocXP_CompartmentClick("VocXP", "LeftButton")
+  check("compartment click shows", w.frame.shown == true and w.sounds[#w.sounds] == 850)
+  local btn = {}
+  w.env.VocXP_CompartmentEnter("VocXP", btn)
+  check("compartment tooltip anchors to the button", w.gametip.owner == btn and w.gametip.shown == true)
+  check("compartment tooltip title is gold", w.gametip.title == "VocXP"
+    and w.gametip.titleColor[1] == 1 and w.gametip.titleColor[2] == 0.82 and w.gametip.titleColor[3] == 0)
+  check("compartment tooltip teaches the slash", #w.gametip.lines == 2
+    and w.gametip.lines[2]:find("/vxp", 1, true) ~= nil)
+  w.env.VocXP_CompartmentLeave("VocXP", btn)
+  check("compartment leave hides the tooltip", w.gametip.shown == false)
+end
+
+-- 29. Corrupt SavedVariables reset to defaults instead of misbehaving.
+do
+  local w = newWorld()
+  w.savedVars = { shown = "yes", locked = 1, point = 5, x = "far", y = 200 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("wrong-typed keys reset", ns.db.shown == true and ns.db.locked == false
+    and ns.db.point == "CENTER" and ns.db.x == -340 and ns.db.y == 200)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")

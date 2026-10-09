@@ -12,20 +12,22 @@ self = false
 unused_args = false
 exclude_files = { ".reference/**" }
 
--- Globals this addon owns: SavedVariables and slash registration.
+-- Globals this addon owns: SavedVariables, slash registration, and the
+-- addon compartment entry points named in the .toc.
 globals = {
   "VocXPDB",
-  "SLASH_VOCXP1",
+  "SLASH_VOCXP1", "SLASH_VOCXP2",
   "SlashCmdList",
+  "VocXP_CompartmentClick", "VocXP_CompartmentEnter", "VocXP_CompartmentLeave",
 }
 
 -- WoW API and UI globals read by the addon.
 read_globals = {
-  "C_PvP", "C_Sound", "C_Timer", "C_UnitAuras",
-  "CreateFrame", "GetTime", "GetXPExhaustion", "IsInInstance", "UIParent",
+  "C_PvP", "C_Timer", "C_UnitAuras",
+  "CreateFrame", "GameTooltip", "GetTime", "GetXPExhaustion", "IsInInstance",
+  "Settings", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
-  "SOUNDKIT", -- presence-gated; click() falls back to numeric IDs
-  -- VocDebug guest hook (our own addon, not a Blizzard API)
+  "PlaySound", "SOUNDKIT", -- presence-gated; ns.play falls back to numeric IDs
 }
 
 files["tests/**"] = {
