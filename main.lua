@@ -312,7 +312,6 @@ local etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
 local baseline = nil
 local identity = nil
 local paused = false
-local lastBonusKey = nil -- emit only when the bonus set changes
 
 local function resetTrackers()
   rateTracker = ns.newTracker(GetTime())
@@ -500,10 +499,6 @@ local function refresh()
   title:SetText(ns.titleText(est))
   sub:SetText(ns.subText(est))
   local bonuses = bonusParts()
-  local bonusKey = table.concat(bonuses, "|")
-  if bonusKey ~= lastBonusKey then
-    lastBonusKey = bonusKey
-  end
   if #bonuses == 0 then
     body:SetTextColor(COLORS.red[1], COLORS.red[2], COLORS.red[3])
     body:SetText("No XP bonus")
