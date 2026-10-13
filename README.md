@@ -52,7 +52,11 @@ line per active bonus: War Mode (live
 Enlisted value, +10% base, higher under Call to Arms),
 Warband Mentored Leveling with your current %, WHEE! and Darkmoon
 Top Hat (+10%, Darkmoon, either/or), Grim Visage / Unburdened (+10%,
-Hallow's End), and Rested. No bonus, no mystery: it says "No XP
+Hallow's End), and Rested. When worn heirlooms earn the Regalia of
+Fabled Adventurers set, the Rested line carries the live burn
+reduction (`Rested · -30% use (Regalia 2pc)`): the set stretches
+Rested instead of raising the rate, so it annotates Rested rather
+than joining the valued list. No bonus, no mystery: it says "No XP
 bonus" so you know to fix it. Below that, gray lines name the
 bonuses you are missing, each with its value and a short
 how-to:
@@ -60,6 +64,7 @@ how-to:
 ```
 +10% WHEE! (Faire week)
 +10% Wickerman (Hallow's End)
+-60% Rested use (Regalia 6pc, 4/6 worn)
 ```
 
 In dungeons and other instances the game hides world-granted
@@ -70,7 +75,8 @@ keep reporting live.
 On World of Warcraft Forever only Rested is ever suggested: War
 Mode, Warband Mentored, and the event buffs are unconfirmed
 there, so the addon shows them when active but never recommends
-them. The rate and forecast work the same on both clients.
+them. Regalia never appears there: the heirloom set is retail-only.
+The rate and forecast work the same on both clients.
 
 Max-level characters never see the window at all, and the addon
 runs no ticker and no XP, level, or aura event handlers for them.
@@ -93,7 +99,8 @@ monotonic clock. A trailing ten-minute window gives the rate, a
 fifteen-minute window gives the forecast, and neither is ever
 persisted, so a reload starts an honest fresh session. Bonuses are
 read live from the client (War Mode, rested state, the mentored and
-holiday auras) and nothing is multiplied twice: awarded XP already
+holiday auras, heirloom count) and nothing is multiplied twice:
+awarded XP already
 includes every bonus.
 
 ## What's inside

@@ -365,6 +365,42 @@ local function rested()
   return GetXPExhaustion() ~= nil
 end
 
+-- Regalia of Fabled Adventurers, the heirloom set: 2 pieces cut Rested
+-- consumption 30% (spell 341381), 6 pieces cut another 30% (341248),
+-- 60% total. The bonuses are passive hidden auras, unreadable from
+-- the aura container, so count heirloom-quality gear in the eight
+-- counting slots instead; weapons and trinkets never count. Retail
+-- only: heirlooms predate the set everywhere else, so the count means
+-- Regalia only where the set exists (shown on retail, never Forever).
+local regaliaSlots = {
+  "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot",
+  "ChestSlot", "LegsSlot", "Finger0Slot", "Finger1Slot",
+}
+local HEIRLOOM_QUALITY = 7 -- Enum.ItemQuality.Heirloom, live + forever
+
+function ns.regaliaPieces()
+  if type(C_PaperDollInfo) ~= "table"
+      or type(C_PaperDollInfo.GetInventorySlotInfo) ~= "function"
+      or type(GetInventoryItemQuality) ~= "function" then
+    return 0
+  end
+  local n = 0
+  for _, slotName in ipairs(regaliaSlots) do
+    local slot = C_PaperDollInfo.GetInventorySlotInfo(slotName)
+    if type(slot) == "number"
+        and GetInventoryItemQuality("player", slot) == HEIRLOOM_QUALITY then
+      n = n + 1
+    end
+  end
+  return n
+end
+
+function ns.regaliaReduction(pieces)
+  if pieces >= 6 then return 60, "6pc" end
+  if pieces >= 2 then return 30, "2pc" end
+  return 0, nil
+end
+
 -- Fixed-value XP-buff auras by spell ID: WHEE! (Darkmoon carousel and
 -- coaster), Darkmoon Top Hat (separate aura, same +10%), Grim Visage /
 -- Unburdened (Hallow's End Wickerman, one per faction).
@@ -422,6 +458,16 @@ end
 -- Bonus lines, highest value first. Lines without a number (Rested,
 -- an unreadable Mentored value) trail in their usual order; ties keep
 -- insertion order, so the sort is stable.
+-- The Rested line carries the live Regalia burn reduction: the set
+-- multiplies Rested duration, not the XP rate, so it annotates Rested
+-- instead of joining the valued list, where a 30 would read as +30% XP.
+local function restedLabel()
+  if ns.clientFlavor() ~= "retail" then return "Rested" end
+  local reduction, tier = ns.regaliaReduction(ns.regaliaPieces())
+  if reduction <= 0 then return "Rested" end
+  return ("Rested · -%d%% use (Regalia %s)"):format(reduction, tier)
+end
+
 local function bonusParts()
   local parts = {}
   local function add(pct, label)
@@ -436,7 +482,7 @@ local function bonusParts()
   for _, buff in ipairs(xpBuffs) do
     if not restricted and hasAura(buff.id) then add(buff.pct, buff.label) end
   end
-  if rested() then add(nil, "Rested") end
+  if rested() then add(nil, restedLabel()) end
   sortByValue(parts)
   local labels = {}
   for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
@@ -453,6 +499,10 @@ end
 -- are unconfirmed there, so suggesting them would be guessing.
 -- Detection stays ungated on every client (a lit War Mode flag or
 -- a present aura is real anywhere); only these suggestions gate.
+-- Regalia progress is retail-only like the event buffs (the set does
+-- not exist on Forever) and teaches the next threshold once at least
+-- one heirloom is worn; zero worn is no signal anything is owned, so
+-- it stays quiet. Equipment reads work in instances, so no gate there.
 -- Confirm more via beta /dumps and extend the gate below.
 local function missingParts()
   local parts = {}
@@ -475,6 +525,14 @@ local function missingParts()
     add(10, "+10% Wickerman (Hallow's End)")
   end
   if not rested() then add(nil, "Rested (rest in town)") end
+  if not forever then
+    local pieces = ns.regaliaPieces()
+    if pieces == 1 then
+      add(nil, "-30% Rested use (Regalia 2pc, one more heirloom)")
+    elseif pieces >= 2 and pieces < 6 then
+      add(nil, ("-60%% Rested use (Regalia 6pc, %d/6 worn)"):format(pieces))
+    end
+  end
   if restricted and not forever then add(nil, "Aura scan unavailable in instances") end
   sortByValue(parts)
   local labels = {}
@@ -533,6 +591,7 @@ local function shutdown()
   frame:UnregisterEvent("PLAYER_XP_UPDATE")
   frame:UnregisterEvent("PLAYER_LEVEL_UP")
   frame:UnregisterEvent("UNIT_AURA")
+  frame:UnregisterEvent("PLAYER_EQUIPMENT_CHANGED")
 end
 
 local function readSnapshot()
@@ -641,6 +700,7 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     frame:RegisterEvent("PLAYER_XP_UPDATE")
     frame:RegisterEvent("PLAYER_LEVEL_UP")
     frame:RegisterEvent("UNIT_AURA")
+    frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
     if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
     applyLock()
   else
@@ -652,6 +712,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     -- PLAYER_LEVEL_UP falls through to a bare re-render: the XP path
     -- is the single authoritative award source, so a ding never adds
     -- anything here and event order cannot double-count it.
+    -- PLAYER_EQUIPMENT_CHANGED falls through the same way: a gear swap
+    -- only re-renders, which refreshes the Regalia lines at once.
   end
   refresh()
 end)
