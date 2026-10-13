@@ -49,6 +49,16 @@ local function loadAddon(world)
       return world.addonInterfaceVersion
     end,
   }
+  g.C_PaperDollInfo = {
+    GetInventorySlotInfo = function(slotName)
+      world.slotQueries[#world.slotQueries + 1] = slotName
+      return world.slotIDs[slotName]
+    end,
+  }
+  g.GetInventoryItemQuality = function(unit, slot)
+    if unit ~= "player" then return nil end
+    return world.equipped[slot]
+  end
   g.IsInInstance = function() return world.inInstance end
   g.PlaySound = function(id) world.sounds[#world.sounds + 1] = id end
   g.GameTooltip = {
@@ -154,6 +164,9 @@ local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
            addonInterfaceVersion = 120100,
+           slotIDs = { HeadSlot = 1, NeckSlot = 2, ShoulderSlot = 3, BackSlot = 15,
+                       ChestSlot = 5, LegsSlot = 7, Finger0Slot = 11, Finger1Slot = 12 },
+           equipped = {}, slotQueries = {},
            printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil,
            gametip = { lines = {} }, withSettings = false, settingsReg = {},
            settingsChecks = 0, settingCallbacks = {} }
@@ -172,6 +185,10 @@ end
 
 local function missedline(w)
   return w.frame.missed and w.frame.missed.text
+end
+
+local function wear(w, ...)
+  for _, slotName in ipairs({ ... }) do w.equipped[w.slotIDs[slotName]] = 7 end
 end
 
 local function subline(w)
@@ -1338,6 +1355,172 @@ do -- no C_AddOns at all: same retail fallback, silent
   clientLoaded(w)
   check("flavor nil fallback", w.ns.clientFlavor() == "retail")
   check("flavor nil full list", (missedline(w) or ""):find("War Mode", 1, true) ~= nil)
+end
+
+-- 31. Regalia of Fabled Adventurers: heirloom count slows Rested use.
+-- The set cuts Rested consumption 30% at 2 pieces and another 30% at 6;
+-- the Rested line carries the live reduction, and the missing section
+-- teaches the next threshold.
+do -- Rested + 2 heirlooms annotates the Rested line
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot", "ChestSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia 2pc annotates rested",
+    readout(w, "0 XP/hr", "Rested · -30% use (Regalia 2pc)", GREEN_C))
+  check("regalia 2pc missing teaches 6pc",
+    (missedline(w) or ""):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
+end
+do -- 6 pieces: the full -60%, nothing left to teach
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia 6pc annotates rested",
+    readout(w, "0 XP/hr", "Rested · -60% use (Regalia 6pc)", GREEN_C))
+  check("regalia 6pc missing quiet", not (missedline(w) or ""):find("Regalia", 1, true))
+end
+do -- one heirloom: plain Rested, the 2pc taught below
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia 1pc rested plain", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  check("regalia 1pc missing teaches 2pc",
+    (missedline(w) or ""):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
+end
+do -- unrested with the set banked: Rested stays the ask, Regalia the next step
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot", "ChestSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia unrested no green line", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  check("regalia unrested missing",
+    (missedline(w) or ""):find("Rested (rest in town)", 1, true) ~= nil
+    and (missedline(w) or ""):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
+end
+do -- non-heirloom gear never counts
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot")
+  w.equipped[w.slotIDs.ChestSlot] = 4 -- epic, not an heirloom
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia ignores epics", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  check("regalia epics still 1pc",
+    (missedline(w) or ""):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
+end
+do -- thresholds: 0-1 nothing, 2-5 the first cut, 6+ the full cut
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local r0 = ns.regaliaReduction(0)
+  local r1 = ns.regaliaReduction(1)
+  local r2, t2 = ns.regaliaReduction(2)
+  local r5, t5 = ns.regaliaReduction(5)
+  local r6, t6 = ns.regaliaReduction(6)
+  local r8, t8 = ns.regaliaReduction(8)
+  check("regalia thresholds", r0 == 0 and r1 == 0 and r2 == 30 and r5 == 30
+    and r6 == 60 and r8 == 60 and t2 == "2pc" and t5 == "2pc" and t6 == "6pc" and t8 == "6pc")
+end
+do -- exactly the eight counting slots are scanned, never weapons or trinkets
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local seen = {}
+  for _, slotName in ipairs(w.slotQueries) do seen[slotName] = true end
+  local n = 0
+  for _ in pairs(seen) do n = n + 1 end
+  check("regalia scans eight slots", n == 8
+    and seen.HeadSlot and seen.NeckSlot and seen.ShoulderSlot and seen.BackSlot
+    and seen.ChestSlot and seen.LegsSlot and seen.Finger0Slot and seen.Finger1Slot)
+end
+do -- missing equipment API degrades to today's readout, never an error
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  wear(w, "HeadSlot", "ChestSlot")
+  w.env.C_PaperDollInfo = nil
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia no slot api degrades", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  check("regalia no slot api missing quiet", not (missedline(w) or ""):find("Regalia", 1, true))
+end
+do
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  wear(w, "HeadSlot", "ChestSlot")
+  w.env.GetInventoryItemQuality = nil
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia no quality api degrades", readout(w, "0 XP/hr", "Rested", GREEN_C))
+end
+do -- Forever: heirlooms predate the set, so the count means nothing there
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia forever rested plain", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  check("regalia forever missing quiet", missedline(w) == "")
+end
+do -- gear swaps re-render at once through PLAYER_EQUIPMENT_CHANGED
+  local w = newWorld()
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("equipment event registered", w.frame.events.PLAYER_EQUIPMENT_CHANGED == true)
+  wear(w, "HeadSlot")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.HeadSlot, false)
+  check("one heirloom plain", readout(w, "Collecting data", "Rested", GREEN_C))
+  wear(w, "HeadSlot", "ChestSlot")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.ChestSlot, false)
+  check("second heirloom annotates",
+    readout(w, "Collecting data", "Rested · -30% use (Regalia 2pc)", GREEN_C))
+end
+do -- instances keep the equipment-derived lines: the paper doll reads fine there
+  local w = newWorld()
+  w.inInstance = true
+  w.rested = true
+  loadAddon(w)
+  clientLoaded(w)
+  wear(w, "HeadSlot", "ChestSlot")
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  check("regalia instance active",
+    readout(w, "0 XP/hr", "Rested · -30% use (Regalia 2pc)", GREEN_C))
+  check("regalia instance missing", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+    .. "-60% Rested use (Regalia 6pc, 2/6 worn)\n"
+    .. "Aura scan unavailable in instances")
+end
+do -- dormancy covers the equipment event too
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.max = 0, 0
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_XP_UPDATE")
+  check("ding unregisters equipment", w.frame.events.PLAYER_EQUIPMENT_CHANGED == nil)
+  w.max = 50000
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("rewake reregisters equipment", w.frame.events.PLAYER_EQUIPMENT_CHANGED == true)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")
