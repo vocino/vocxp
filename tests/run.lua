@@ -137,6 +137,7 @@ local function loadAddon(world)
     t.SetWidth = function(_, w) t.width = w end
     t.SetSize = function(_, w, h) t.size = { w, h } end
     t.SetBlendMode = function(_, b) t.blend = b end
+    t.SetTexCoord = function(_, l, r, tp, bt) t.texcoord = { l, r, tp, bt } end
     t.SetVertexColor = function(_, r, gg, b) t.vertex = { r, gg, b } end
     t.SetRoundLayoutToNearestPixel = function(_, e) t.rounded = e end
     t.SetShown = function(_, s) t.shown = s end
@@ -371,8 +372,8 @@ do
   check("animated bar needs no raw texture", w.bar.minmax == nil and w.bar.barTexture == nil)
   check("background atlas", w.bg.atlas == "UI-HUD-ExperienceBar-Background")
   check("rested wears prediction", w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
-  check("quests wear the gain look", w.questFill.atlas == "XPBarAnim-OrangeGain"
-    and w.questFill.blend == "ADD"
+  check("quests wear the gain look", w.questFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction"
+    and w.questFill.blend == nil
     and w.questFill.vertex[1] == 0.901 and w.questFill.vertex[2] == 0.8
     and w.questFill.vertex[3] == 0.601)
   check("quest overlay above rested", w.restFill.layer == "ARTWORK" and w.restFill.sublevel == -1
@@ -416,6 +417,8 @@ do -- rested overlay reaches past progress and swaps the fill
   xpEvent(w)
   check("rested overlay shown", w.restFill.shown == true)
   check("rested overlay width", close(w.restFill.width, 452))
+  check("rested overlay cropped, not stretched", w.restFill.texcoord ~= nil
+    and close(w.restFill.texcoord[1], 0) and close(w.restFill.texcoord[2], 0.8))
   check("rested bar atlas", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Rested")
   check("rested flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
@@ -457,8 +460,23 @@ do -- quest overlay spans from progress to the turn-in reach
   check("quest overlay shown", w.questFill.shown == true)
   check("quest overlay starts at progress", close(w.questFill.points[1][4], 282.5))
   check("quest overlay width", close(w.questFill.width, 169.5))
+  check("quest overlay cropped to its span", w.questFill.texcoord ~= nil
+    and close(w.questFill.texcoord[1], 0.5) and close(w.questFill.texcoord[2], 0.8))
   hover(w)
   check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
+end
+do -- rested stacks beyond quest: the pip marks true runout past turn-ins
+  local w = newWorld()
+  w.restedXp = 200
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("stacked rested width", close(w.restFill.width, 452))
+  check("stacked pip past quest edge", w.pip.shown == true
+    and close(w.pip.points[1][4], 452) and w.questFill.width < 452)
 end
 do -- one quest reads singular
   local w = newWorld()
@@ -609,8 +627,15 @@ do
   local w = newWorld()
   local ns = loadAddon(w)
   local seg = ns.barSegments({ level = 10, xp = 250, req = 1000, capped = false }, 250, 500)
-  check("segment fractions", close(seg.progress, 0.25) and close(seg.restedEnd, 0.5)
+  check("segment fractions", close(seg.progress, 0.25) and close(seg.restedEnd, 1.0)
     and close(seg.questEnd, 0.75))
+  check("segments stack, never overlap", seg.questEnd >= seg.progress
+    and seg.restedEnd >= seg.questEnd)
+  check("segment flags", seg.hasRested == true and seg.hasQuest == true)
+  local noQuest = ns.barSegments({ level = 10, xp = 250, req = 1000, capped = false }, 250, 0)
+  check("no quest reduces to native", close(noQuest.restedEnd, 0.5) and noQuest.hasQuest == false)
+  local noRested = ns.barSegments({ level = 10, xp = 250, req = 1000, capped = false }, 0, 500)
+  check("no rested, no rested tail", close(noRested.restedEnd, 0.75) and noRested.hasRested == false)
   check("segment percents", close(seg.pct, 25) and close(seg.restedPct, 25) and close(seg.questPct, 50))
   check("segment label", ns.barLabel({ level = 10, xp = 250, req = 1000 }, seg) == "10  250/1k (25%)")
   check("label rounds half up",

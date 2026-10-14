@@ -289,7 +289,6 @@ ns.FRAME_HEIGHT = 55 -- art zone, rate line, and stats line
 ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
 ns.RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested"
 ns.PREDICT_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction"
-ns.QUEST_ATLAS = "XPBarAnim-OrangeGain"
 ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
 ns.FRAME_ATLAS = "UI-HUD-ExperienceBar-Frame"
 ns.PIP_ATLAS = "UI-HUD-ExperienceBar-Frame-Pip"
@@ -346,9 +345,13 @@ local questFill = bar:CreateTexture(nil, "ARTWORK", nil, 0)
 questFill:SetPoint("TOP", bar, "TOP", 0, 0)
 questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
 questFill:SetWidth(0)
-local questOk = setAtlasOrHide(questFill, ns.QUEST_ATLAS, false)
-if questOk then -- Blizzard's pending-gain look: orange atlas, ADD blend, warm tint
-  questFill:SetBlendMode("ADD")
+-- Quest reach wears the same prediction material as rested, tinted
+-- with Blizzard's pending-gain gold: one material for "beyond the
+-- fill", warm where the XP is banked, cool where it is projected.
+-- Opaque, never ADD-blended, so its right edge stays a hard line
+-- against the rested reach behind it.
+local questOk = setAtlasOrHide(questFill, ns.PREDICT_ATLAS, false)
+if questOk then
   questFill:SetVertexColor(COLORS.gain[1], COLORS.gain[2], COLORS.gain[3])
 end
 questFill:Hide()
@@ -641,21 +644,27 @@ end
 
 -- Bar segments ---------------------------------------------------------
 -- Fractions over the current level: where progress ends, how far
--- rested XP reaches, how far ready-to-turn-in quests reach. All
--- clamped to [0, 1]; overlays never start before progress. An
--- invalid or capped snapshot has no bar: nil, never zeros that
--- would paint a misleading empty bar.
+-- ready-to-turn-in quests reach, how far rested XP reaches beyond
+-- them. The overlays STACK, in the order you would play them: banked
+-- quest XP first, then rested grinding. They never overlap, so each
+-- boundary is a hard edge. With no quest XP the rested reach is the
+-- native projection, (xp + rested) / req. All clamped to [0, 1];
+-- overlays never start before progress. An invalid or capped
+-- snapshot has no bar: nil, never zeros that would paint a
+-- misleading empty bar.
 function ns.barSegments(snap, restedXp, questXp)
   if not ns.validateSnapshot(snap) or snap.capped then return nil end
   local r = (type(restedXp) == "number" and restedXp > 0) and restedXp or 0
   local q = (type(questXp) == "number" and questXp > 0) and questXp or 0
   local progress = math.max(0, math.min(1, snap.xp / snap.req))
-  local restedEnd = math.max(progress, math.min(1, (snap.xp + r) / snap.req))
   local questEnd = math.max(progress, math.min(1, (snap.xp + q) / snap.req))
+  local restedEnd = math.max(questEnd, math.min(1, (snap.xp + q + r) / snap.req))
   return {
     progress = progress,
     restedEnd = restedEnd,
     questEnd = questEnd,
+    hasRested = r > 0,
+    hasQuest = q > 0,
     pct = progress * 100,
     restedPct = r / snap.req * 100,
     questPct = q / snap.req * 100,
@@ -678,7 +687,7 @@ function ns.subStatsLine(seg, count)
     parts[#parts + 1] = ("%d %s ready: %d%%"):format(count, noun,
       math.floor(seg.questPct + 0.5))
   end
-  if seg.restedEnd > seg.progress and seg.restedPct >= 0.5 then
+  if seg.hasRested and seg.restedPct >= 0.5 then
     parts[#parts + 1] = ("Rested: %d%%"):format(math.floor(seg.restedPct + 0.5))
   end
   if #parts == 0 then return nil end
@@ -824,7 +833,7 @@ local function refresh()
       bar:SetValue(baseline.xp)
     end
     barText:SetText(ns.barLabel(baseline, seg))
-    local isRested = seg.restedEnd > seg.progress
+    local isRested = seg.hasRested
     local atlas = isRested and ns.RESTED_ATLAS or ns.XP_ATLAS
     if type(bar.SetBarTexture) == "function" then
       pcall(bar.SetBarTexture, bar, atlas)
@@ -839,6 +848,9 @@ local function refresh()
     end
     if isRested and restOk then
       restFill:SetWidth(seg.restedEnd * ns.TROUGH_WIDTH)
+      -- Crop like the native bar (ExhaustionTickMixin), never stretch:
+      -- the atlas maps across the full bar width.
+      restFill:SetTexCoord(0, seg.restedEnd, 0, 1)
       restFill:Show()
     else
       restFill:Hide()
@@ -849,6 +861,7 @@ local function refresh()
       questFill:SetPoint("TOP", bar, "TOP", 0, 0)
       questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
       questFill:SetWidth((seg.questEnd - seg.progress) * ns.TROUGH_WIDTH)
+      questFill:SetTexCoord(seg.progress, seg.questEnd, 0, 1)
       questFill:Show()
     else
       questFill:Hide()
@@ -898,7 +911,7 @@ function ns.showTip()
   GameTooltip:AddLine(ns.titleText(est), COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   if seg then
-    if seg.restedEnd > seg.progress and seg.restedPct >= 0.5 then
+    if seg.hasRested and seg.restedPct >= 0.5 then
       local pct = math.floor(seg.restedPct + 0.5)
       GameTooltip:AddLine(("Rested: %d%% of level"):format(pct),
         COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
