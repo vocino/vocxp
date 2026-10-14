@@ -127,7 +127,7 @@ local function loadAddon(world)
   g.SlashCmdList = {}
   local function newTexture()
     local t = { shown = true, width = 0, points = {} }
-    t.SetAtlas = function(_, a) t.atlas = a end
+    t.SetAtlas = function(_, a, u) if world.noAtlas then error("unknown atlas") end t.atlas = a t.atlasSize = u end
     t.SetTexture = function(_, f) t.file = f end
     t.SetAllPoints = function() t.allPoints = true end
     t.SetPoint = function(_, p, rel, rp, x, y)
@@ -135,6 +135,10 @@ local function loadAddon(world)
     end
     t.ClearAllPoints = function() t.points = {} end
     t.SetWidth = function(_, w) t.width = w end
+    t.SetSize = function(_, w, h) t.size = { w, h } end
+    t.SetBlendMode = function(_, b) t.blend = b end
+    t.SetVertexColor = function(_, r, gg, b) t.vertex = { r, gg, b } end
+    t.SetRoundLayoutToNearestPixel = function(_, e) t.rounded = e end
     t.SetShown = function(_, s) t.shown = s end
     t.Hide = function() t.shown = false end
     t.Show = function() t.shown = true end
@@ -142,15 +146,18 @@ local function loadAddon(world)
     return t
   end
   g.CreateFrame = function(ftype, _, _, template)
+    if world.failTemplate and template ~= nil then error("unknown template") end
     local f = { events = {}, scripts = {}, ctype = ftype, template = template,
                 strings = {}, textures = {} }
     f.SetSize = function(_, w, h) f.size = { w, h } end
+    f.SetHeight = function(_, h) f.height = h end
     f.SetMovable = function(_, m) f.movable = m end
     f.SetClampedToScreen = function(_, c) f.clamped = (c == nil) and true or c end
     f.RegisterEvent = function(_, e) f.events[e] = true end
     f.UnregisterEvent = function(_, e) f.events[e] = nil end
     f.RegisterForDrag = function(_, b) f.dragButton = b end
     f.EnableMouse = function(_, m) f.mouse = m end
+    f.SetRoundLayoutToNearestPixel = function(_, e) f.rounded = e end
     f.SetShown = function(_, s) f.shown = s end
     f.SetAllPoints = function() f.allPoints = true end
     f.SetScript = function(_, sname, fn) f.scripts[sname] = fn end
@@ -164,22 +171,39 @@ local function loadAddon(world)
     f.SetMinMaxValues = function(_, lo, hi) f.minmax = { lo, hi } end
     f.SetValue = function(_, v) f.value = v end
     f.SetStatusBarTexture = function(_, tx) f.barTexture = tx end
+    if template == "GradualAnimatedStatusBarTemplate" then
+      f.SetBarTexture = function(_, a) f.barAtlas = a end
+      f.SetAnimationTextures = function(_, gf, lu) f.flare = { gf, lu } end
+      f.SetAnimatedValues = function(_, v, lo, hi, lvl)
+        f.animated = { v, lo, hi, lvl }
+        f.value = v
+      end
+    end
     f.GetStatusBarTexture = function()
       if f.fillTex == nil then f.fillTex = newTexture() end
       return f.fillTex
     end
-    f.CreateTexture = function()
+    f.CreateTexture = function(_, _, layer, _, sub)
       local t = newTexture()
+      t.layer, t.sublevel = layer, sub or 0
       f.textures[#f.textures + 1] = t
       return t
     end
     f.CreateFontString = function(_, _, _, tmpl)
+      if tmpl == world.failFont then error("unknown font") end
       local t = { template = tmpl, text = "" }
-      t.SetPoint = function() end
+      t.SetPoint = function(_, p, rel, rp, x, y) t.point = { p, rel, rp, x, y } end
       t.SetJustifyH = function() end
+      t.shown = true
+      t.SetShown = function(_, s) t.shown = s end
+      t.Hide = function() t.shown = false end
+      t.Show = function() t.shown = true end
+      t.IsShown = function() return t.shown end
       t.SetText = function(_, s) t.text = s end
       t.GetText = function() return t.text end
       t.SetTextColor = function(_, r, gg, b) t.color = { r, gg, b } end
+      t.SetShadowOffset = function(_, x, y) t.shadow = { x, y } end
+      t.SetRoundLayoutToNearestPixel = function(_, e) t.rounded = e end
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
       f.strings[#f.strings + 1] = t
@@ -209,6 +233,10 @@ local function loadAddon(world)
   world.restFill = world.bar.textures[2]
   world.questFill = world.bar.textures[3]
   world.label = world.bar.strings[1]
+  world.frameTex = world.frame.textures[1] -- the stroke hangs on the frame
+  world.pip = world.bar.textures[4]
+  world.rate = world.frame.strings[1]
+  world.sub = world.frame.strings[2]
   world.ns = ns
   world.env = g
   return ns
@@ -323,16 +351,42 @@ do
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  check("frame is a fixed bar", w.frame.size[1] == 320 and w.frame.size[2] == 20)
-  check("bar spans 0 to 1", w.bar.minmax[1] == 0 and w.bar.minmax[2] == 1)
-  check("bar wears the native fill file",
-    w.bar.barTexture == "Interface\\TargetingFrame\\UI-StatusBar")
+  check("frame holds bar and lines", w.frame.size[1] == 571 and w.frame.size[2] == 55)
+  check("rate line face", w.rate.template == "GameFontNormal")
+  check("rate line shadow", w.rate.shadow[1] == 1 and w.rate.shadow[2] == -1)
+  check("rate line under bar", w.rate.point[1] == "TOP" and w.rate.point[3] == "TOP" and w.rate.point[5] == -22)
+  check("rate line snapped", w.rate.rounded == true)
+  check("bar sits in the art", w.bar.size[1] == 565 and w.bar.size[2] == 11 and w.bar.point[1] == "TOPLEFT" and w.bar.point[2] == 1 and w.bar.point[3] == -1)
+  check("stats line face", w.sub.template == "GameFontNormal")
+  check("stats line shadow", w.sub.shadow[1] == 1 and w.sub.shadow[2] == -1)
+  check("stats line under rate", w.sub.point[1] == "TOP" and w.sub.point[2] == w.rate)
+  check("stats line snapped", w.sub.rounded == true)
+  check("stats line starts hidden", w.sub.shown == false)
+  check("label carries the 1px shadow", w.label.shadow[1] == 1 and w.label.shadow[2] == -1)
+  check("every region snaps to pixels", w.frame.rounded == true and w.bar.rounded == true
+    and w.bg.rounded == true and w.restFill.rounded == true and w.questFill.rounded == true
+    and w.pip.rounded == true and w.label.rounded == true
+    and w.rate.rounded == true and w.sub.rounded == true
+    and w.frameTex.rounded == true)
+  check("animated bar needs no raw texture", w.bar.minmax == nil and w.bar.barTexture == nil)
   check("background atlas", w.bg.atlas == "UI-HUD-ExperienceBar-Background")
-  check("overlays wear the prediction atlas",
-    w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction"
-    and w.questFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
+  check("rested wears prediction", w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
+  check("quests wear the gain look", w.questFill.atlas == "XPBarAnim-OrangeGain"
+    and w.questFill.blend == "ADD"
+    and w.questFill.vertex[1] == 0.901 and w.questFill.vertex[2] == 0.8
+    and w.questFill.vertex[3] == 0.601)
+  check("quest overlay above rested", w.restFill.layer == "ARTWORK" and w.restFill.sublevel == -1
+    and w.questFill.layer == "ARTWORK" and w.questFill.sublevel == 0)
   check("overlays start hidden", w.restFill.shown == false and w.questFill.shown == false)
-  check("label uses the status bar font", w.label.template == "TextStatusBarText")
+  check("label uses the highlight face", w.label.template == "GameFontHighlight")
+  check("label centered", w.label.point[1] == "CENTER" and w.label.point[4] == 0
+    and w.label.point[5] == 1)
+  check("bar uses the animated template", w.bar.template == "GradualAnimatedStatusBarTemplate")
+  check("frame stroke atlas", w.frameTex.atlas == "UI-HUD-ExperienceBar-Frame" and w.frameTex.atlasSize == true)
+  check("pip atlas", w.pip.atlas == "UI-HUD-ExperienceBar-Frame-Pip")
+  check("pip starts hidden", w.pip.shown == false)
+  check("art pins its size", w.bg.atlasSize == false and w.restFill.atlasSize == false
+    and w.questFill.atlasSize == false and w.pip.atlasSize == false)
   check("frame movable", w.frame.movable == true)
   check("frame clamped", w.frame.clamped == true)
   check("frame drags on left button", w.frame.dragButton == "LeftButton")
@@ -345,9 +399,13 @@ do
   clientLoaded(w)
   w.xp = 500
   xpEvent(w)
-  check("progress value", close(w.bar.value, 0.5))
+  check("progress value", w.bar.value == 500)
   check("bar label", w.label.text == "10  500/1k (50%)")
-  check("unrested fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  check("unrested bar atlas", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  check("animated values", w.bar.animated[1] == 500 and w.bar.animated[2] == 0
+    and w.bar.animated[3] == 1000 and w.bar.animated[4] == 10)
+  check("unrested flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
+    and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Experience-2x-Flipbook")
 end
 do -- rested overlay reaches past progress and swaps the fill
   local w = newWorld()
@@ -357,8 +415,11 @@ do -- rested overlay reaches past progress and swaps the fill
   w.xp = 500
   xpEvent(w)
   check("rested overlay shown", w.restFill.shown == true)
-  check("rested overlay width", close(w.restFill.width, 256))
-  check("rested fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Rested")
+  check("rested overlay width", close(w.restFill.width, 452))
+  check("rested bar atlas", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Rested")
+  check("rested flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
+    and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
+  check("pip rides rested", w.pip.shown == true and close(w.pip.points[1][4], 452))
   hover(w)
   check("tooltip rested line", tiphas(w, "Rested: 30% of level"))
 end
@@ -370,7 +431,7 @@ do -- exhaustion events repaint the rested layer
     w.frame.events.UPDATE_EXHAUSTION == true and w.frame.events.PLAYER_UPDATE_RESTING == true)
   w.restedXp = 1000
   w.frame.scripts.OnEvent(w.frame, "UPDATE_EXHAUSTION")
-  check("exhaustion paints rested", w.restFill.shown == true and close(w.restFill.width, 320))
+  check("exhaustion paints rested", w.restFill.shown == true and close(w.restFill.width, 565))
   w.restedXp = nil
   w.frame.scripts.OnEvent(w.frame, "PLAYER_UPDATE_RESTING")
   check("rest change clears rested", w.restFill.shown == false)
@@ -382,7 +443,8 @@ do -- disabled XP gain hides the rested layer like the native bar
   loadAddon(w)
   clientLoaded(w)
   check("xp-disabled hides rested", w.restFill.shown == false)
-  check("xp-disabled keeps xp fill", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  check("xp-disabled keeps xp fill", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  check("xp-disabled hides pip", w.pip.shown == false)
 end
 do -- quest overlay spans from progress to the turn-in reach
   local w = newWorld()
@@ -393,8 +455,8 @@ do -- quest overlay spans from progress to the turn-in reach
   setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 200, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   check("quest overlay shown", w.questFill.shown == true)
-  check("quest overlay starts at progress", close(w.questFill.points[1][4], 160))
-  check("quest overlay width", close(w.questFill.width, 96))
+  check("quest overlay starts at progress", close(w.questFill.points[1][4], 282.5))
+  check("quest overlay width", close(w.questFill.width, 169.5))
   hover(w)
   check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
 end
@@ -416,8 +478,130 @@ do -- overlays clamp at the bar edge, never past it
   xpEvent(w)
   setQuests(w, { { id = 11, xp = 5000, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
-  check("rested clamps", close(w.restFill.width, 320))
-  check("quest clamps", close(w.questFill.width, 160))
+  check("rested clamps", close(w.restFill.width, 565))
+  check("quest clamps", close(w.questFill.width, 282.5))
+end
+
+-- 31. Native fidelity: the pip, the plain-bar fallback, atlas failure.
+do -- pip centers on the rested reach
+  local w = newWorld()
+  w.restedXp = 100
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 400
+  xpEvent(w)
+  check("pip centered", w.pip.points[1][1] == "CENTER" and close(w.pip.points[1][4], 282.5) and w.pip.points[1][5] == 2)
+  check("pip size", w.pip.size[1] == 10 and w.pip.size[2] == 14)
+end
+do -- pip hides at the bar edges like the native one
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.restedXp = 1000 -- rested reach: the full bar
+  w.frame.scripts.OnEvent(w.frame, "UPDATE_EXHAUSTION")
+  check("full rested hides pip", w.pip.shown == false)
+  check("full rested keeps fill", w.restFill.shown == true)
+  w.xp, w.restedXp = 0, 5 -- rested reach under 1%
+  xpEvent(w)
+  check("sliver rested hides pip", w.pip.shown == false)
+  check("sliver rested keeps fill", w.restFill.shown == true)
+end
+do -- missing template falls back to a plain bar
+  local w = newWorld()
+  w.failTemplate = true
+  w.restedXp = 300
+  loadAddon(w)
+  check("fallback drops template", w.bar.template == nil)
+  check("fallback wears the file texture", w.bar.barTexture == "Interface\\TargetingFrame\\UI-StatusBar")
+  check("fallback starts 0 to 1", w.bar.minmax[1] == 0 and w.bar.minmax[2] == 1)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  check("fallback paints value", w.bar.value == 500 and w.bar.minmax[2] == 1000)
+  check("fallback fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Rested" and w.bar.fillTex.atlasSize == false)
+  check("fallback no flare", w.bar.flare == nil)
+  check("fallback pip works", w.pip.shown == true)
+end
+do -- missing atlases hide their layers, never the bar
+  local w = newWorld()
+  w.noAtlas = true
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.restedXp = 500, 300
+  xpEvent(w)
+  check("no-atlas bg hidden", w.bg.shown == false)
+  check("no-atlas frame hidden", w.frameTex.shown == false)
+  check("no-atlas overlays hidden", w.restFill.shown == false
+    and w.questFill.shown == false and w.pip.shown == false)
+  check("no-atlas bar paints", w.bar.value == 500 and w.label.text == "10  500/1k (50%)")
+end
+
+-- 32. Stats line: ready quests and rested reach, always on screen.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local snap = { level = 10, xp = 500, req = 1000, capped = false }
+  local both = ns.barSegments(snap, 300, 200)
+  check("stats both", ns.subStatsLine(both, 2) == "2 quests ready: 20% · Rested: 30%")
+  check("stats singular", ns.subStatsLine(both, 1) == "1 quest ready: 20% · Rested: 30%")
+  local quests = ns.barSegments(snap, 0, 200)
+  check("stats quests only", ns.subStatsLine(quests, 2) == "2 quests ready: 20%")
+  local rested = ns.barSegments(snap, 300, 0)
+  check("stats rested only", ns.subStatsLine(rested, 0) == "Rested: 30%")
+  check("stats count without reach hides",
+    ns.subStatsLine(ns.barSegments(snap, 0, 0), 2) == nil)
+  check("stats neither hides", ns.subStatsLine(ns.barSegments(snap, 0, 0), 0) == nil)
+  check("stats nil seg hides", ns.subStatsLine(nil, 2) == nil)
+end
+do -- refresh paints and clears the line live
+  local w = newWorld()
+  w.restedXp = 300
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 100, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("stats paints", w.sub.shown == true
+    and w.sub.text == "2 quests ready: 20% · Rested: 30%")
+  setQuests(w, {})
+  w.restedXp = nil
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("stats clears", w.sub.shown == false)
+end
+
+-- 33. Rate line: XP/hr and time-to-level, always on screen.
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  check("rate collects", w.rate.text == "Collecting data")
+  w.now = w.now + 1800
+  w.xp = 500
+  xpEvent(w)
+  check("rate paints", w.rate.text == "3k XP/hr · 15m")
+  w.env.SlashCmdList.VOCXP("pause")
+  check("rate pauses", w.rate.text == "Paused")
+end
+
+-- 34. Degradation: font fallback, sub-1% reach hides.
+do
+  local w = newWorld()
+  w.failFont = "GameFontHighlight"
+  loadAddon(w)
+  check("font fallback", w.label.template == "GameFontNormal")
+end
+do -- slivers show in the overlays but never as 0% lines
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local seg = ns.barSegments({ level = 75, xp = 9428, req = 69130, capped = false }, 100, 0)
+  check("sliver stats hides", ns.subStatsLine(seg, 0) == nil)
+  w.restedXp = 100
+  w.xp, w.max = 9428, 69130
+  clientLoaded(w)
+  hover(w)
+  check("sliver tooltip hides", not tiphas(w, "Rested: 0%"))
+  check("sliver overlay shows", w.restFill.shown == true)
 end
 
 -- 4. Segment math is pure and total: nil for no-bar, clamped else.
@@ -499,7 +683,7 @@ do -- missing manager degrades to a lone bar, never an error
   clientLoaded(w)
   w.xp = 500
   xpEvent(w)
-  check("no manager still paints", close(w.bar.value, 0.5))
+  check("no manager still paints", w.bar.value == 500)
 end
 do -- partial manager (no methods) is left alone
   local w = newWorld()
@@ -727,6 +911,15 @@ do
   check("drag stops", w.frame.moving == false)
   check("drag persists", ns.db.point == "TOPLEFT" and ns.db.x == 50 and ns.db.y == -60)
 end
+do -- fractional drops round to the pixel grid
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.frame.scripts.OnDragStart(w.frame)
+  w.frame.point = { "TOPLEFT", 50.6, -60.4 } -- the client moved it
+  w.frame.scripts.OnDragStop(w.frame)
+  check("drop rounds", ns.db.x == 51 and ns.db.y == -60)
+end
 
 -- 11. /vxp toggles the bar; /vxp lock gates the drag, never the mouse.
 do
@@ -772,7 +965,7 @@ do -- XP gain accumulates into the session rate
   check("rate line", lines[1] == "3k XP/hr · 15m")
   check("rate sub", lines[2] == "Last 10m")
   check("rate no-bonus", tiphas(w, "No XP bonus"))
-  check("bar tracks xp", close(w.bar.value, 0.5))
+  check("bar tracks xp", w.bar.value == 500)
 end
 do -- level-up carries the remainder across the bar
   local w = newWorld()

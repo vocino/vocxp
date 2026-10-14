@@ -39,6 +39,7 @@ ns.COLORS = {
   muted = { 0.5, 0.5, 0.5 },
   red = { 0.9, 0.3, 0.25 },
   green = { 0.25, 0.9, 0.35 },
+  gain = { 0.901, 0.8, 0.601 }, -- Blizzard's pending-gain tint (the XP overlay)
 }
 local COLORS = ns.COLORS
 
@@ -279,55 +280,129 @@ end
 -- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
 -- a StatusBar wearing the native XP fill atlases, the native
 -- background, prediction-atlas rested and quest overlays, and a
--- TextStatusBarText label. Fixed size: bars don't autofit.
-ns.BAR_WIDTH = 320
-ns.BAR_HEIGHT = 20
+-- GameFontHighlight label. Fixed size: bars don't autofit.
+ns.BAR_WIDTH = 571 -- the native container width; the ribs land at 1:1
+ns.TROUGH_WIDTH = 565 -- InitializeBars seats the bar at container minus 6
+ns.TROUGH_HEIGHT = 11
+ns.ART_HEIGHT = 17 -- the native container height; rate and stats live below it
+ns.FRAME_HEIGHT = 55 -- art zone, rate line, and stats line
 ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
 ns.RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested"
 ns.PREDICT_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction"
+ns.QUEST_ATLAS = "XPBarAnim-OrangeGain"
 ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
+ns.FRAME_ATLAS = "UI-HUD-ExperienceBar-Frame"
+ns.PIP_ATLAS = "UI-HUD-ExperienceBar-Frame-Pip"
+ns.FLARE_XP_ATLAS = "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
+ns.FLARE_RESTED_ATLAS = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
+ns.LEVELUP_XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience-2x-Flipbook"
+ns.LEVELUP_RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook"
 
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent)
-frame:SetSize(ns.BAR_WIDTH, ns.BAR_HEIGHT)
+frame:SetSize(ns.BAR_WIDTH, ns.FRAME_HEIGHT)
 frame:SetMovable(true)
 frame:SetClampedToScreen(true)
 frame:EnableMouse(true) -- hover tooltip always; lock gates dragging, not looking
 
-local bar = CreateFrame("StatusBar", nil, frame)
-bar:SetAllPoints(frame)
-bar:SetMinMaxValues(0, 1)
-bar:SetValue(0)
-bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+-- The animated template is Blizzard's own XP-bar machinery (gain flare,
+-- level-up flash, ding wrap); a client without it gets a plain bar.
+local barOk, animatedBar = pcall(CreateFrame, "StatusBar", nil, frame,
+  "GradualAnimatedStatusBarTemplate")
+local bar = (barOk and animatedBar) or CreateFrame("StatusBar", nil, frame)
+local hasAnimatedBar = barOk and animatedBar ~= nil
+-- InitializeBars seats the bar at (1, -1) of the 571x17 container,
+-- 565x11; the stroke centers on the art zone at its own native size.
+bar:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
+bar:SetSize(ns.TROUGH_WIDTH, ns.TROUGH_HEIGHT)
+if not hasAnimatedBar then
+  -- Plain bars have no SetBarTexture: the file texture plus a 0..1
+  -- range until the first refresh paints real values.
+  bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+  bar:SetMinMaxValues(0, 1)
+  bar:SetValue(0)
+end
 
 -- Atlases are Blizzard's own art. A missing atlas hides its layer
 -- instead of erroring, so a client without one still shows the bar.
-local function setAtlasOrHide(tex, atlas)
-  if pcall(function() tex:SetAtlas(atlas) end) then return true end
+local function setAtlasOrHide(tex, atlas, useSize)
+  if pcall(function() tex:SetAtlas(atlas, useSize) end) then return true end
   tex:Hide()
   return false
 end
 
 local bg = bar:CreateTexture(nil, "BACKGROUND")
 bg:SetAllPoints(bar)
-setAtlasOrHide(bg, ns.BG_ATLAS)
+setAtlasOrHide(bg, ns.BG_ATLAS, false)
 
 local restFill = bar:CreateTexture(nil, "ARTWORK", nil, -1)
 restFill:SetPoint("LEFT", bar, "LEFT", 0, 0)
 restFill:SetPoint("TOP", bar, "TOP", 0, 0)
 restFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
 restFill:SetWidth(0)
-setAtlasOrHide(restFill, ns.PREDICT_ATLAS)
+local restOk = setAtlasOrHide(restFill, ns.PREDICT_ATLAS, false)
 restFill:Hide()
 
 local questFill = bar:CreateTexture(nil, "ARTWORK", nil, 0)
 questFill:SetPoint("TOP", bar, "TOP", 0, 0)
 questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
 questFill:SetWidth(0)
-setAtlasOrHide(questFill, ns.PREDICT_ATLAS)
+local questOk = setAtlasOrHide(questFill, ns.QUEST_ATLAS, false)
+if questOk then -- Blizzard's pending-gain look: orange atlas, ADD blend, warm tint
+  questFill:SetBlendMode("ADD")
+  questFill:SetVertexColor(COLORS.gain[1], COLORS.gain[2], COLORS.gain[3])
+end
 questFill:Hide()
 
-local barText = bar:CreateFontString(nil, "OVERLAY", "TextStatusBarText")
-barText:SetPoint("CENTER", bar, "CENTER", 0, 0)
+-- The stroke around the bar and the rested pip: the same two atlas
+-- layers Blizzard's own bar wears; the stroke hangs on the frame.
+local frameTex = frame:CreateTexture(nil, "OVERLAY")
+frameTex:SetPoint("CENTER", bar, "CENTER", 2, -2)
+setAtlasOrHide(frameTex, ns.FRAME_ATLAS, true)
+
+local pip = bar:CreateTexture(nil, "OVERLAY", nil, 1)
+pip:SetSize(10, 14)
+local pipOk = setAtlasOrHide(pip, ns.PIP_ATLAS, false)
+pip:Hide()
+-- Unknown font objects error at creation, so the label resolves its
+-- white Friz face with a fallback to the gold one.
+local function makeFont(parent, template, fallback)
+  local ok, fs = pcall(parent.CreateFontString, parent, nil, "OVERLAY", template)
+  if ok and fs ~= nil then return fs end
+  return parent:CreateFontString(nil, "OVERLAY", fallback)
+end
+local barText = makeFont(bar, "GameFontHighlight", "GameFontNormal")
+barText:SetPoint("CENTER", bar, "CENTER", 0, 1)
+barText:SetShadowOffset(1, -1)
+
+-- Snap every region to the pixel grid: Blizzard rounds layout natively,
+-- so fractional widths and drag positions render crisp instead of blurred.
+local function snapRegion(region)
+  if region ~= nil and type(region.SetRoundLayoutToNearestPixel) == "function" then
+    pcall(region.SetRoundLayoutToNearestPixel, region, true)
+  end
+end
+snapRegion(frame)
+snapRegion(bar)
+snapRegion(bg)
+snapRegion(restFill)
+snapRegion(questFill)
+snapRegion(frameTex)
+snapRegion(pip)
+snapRegion(barText)
+
+-- The rate line under the art zone: XP/hr and time-to-level, always visible.
+local rate = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+rate:SetPoint("TOP", frame, "TOP", 0, -(ns.ART_HEIGHT + 5))
+rate:SetShadowOffset(1, -1)
+snapRegion(rate)
+
+-- The stats line under the rate line: ready quests and rested reach, always
+-- visible like the mockup, in the standard gold face with the 1px shadow.
+local sub = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+sub:SetPoint("TOP", rate, "BOTTOM", 0, -2)
+sub:SetShadowOffset(1, -1)
+snapRegion(sub)
+sub:Hide()
 
 -- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
@@ -592,6 +667,24 @@ function ns.barLabel(snap, seg)
   return ("%d  %s/%s (%d%%)"):format(snap.level, fmt(snap.xp), fmt(snap.req), pct)
 end
 
+-- The stats line under the bar: ready quests and rested reach in one
+-- glance, no hover needed. Same wording as the tooltip lines. Nil when
+-- neither shows, so the frame keeps a stable size with an empty slot.
+function ns.subStatsLine(seg, count)
+  if seg == nil then return nil end
+  local parts = {}
+  if count > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 then
+    local noun = count == 1 and "quest" or "quests"
+    parts[#parts + 1] = ("%d %s ready: %d%%"):format(count, noun,
+      math.floor(seg.questPct + 0.5))
+  end
+  if seg.restedEnd > seg.progress and seg.restedPct >= 0.5 then
+    parts[#parts + 1] = ("Rested: %d%%"):format(math.floor(seg.restedPct + 0.5))
+  end
+  if #parts == 0 then return nil end
+  return table.concat(parts, " · ")
+end
+
 -- Ready-to-turn-in quest XP --------------------------------------------
 -- The payout waiting at quest givers, as raw XP and a quest count.
 -- GetQuestLogRewardXP reads the selected entry, so the scan saves and
@@ -719,32 +812,66 @@ local function refresh()
   end
   local seg = ns.barSegments(baseline, restedAmount(), questXp)
   if seg then
-    bar:SetValue(seg.progress)
-    barText:SetText(ns.barLabel(baseline, seg))
-    local fill = nil
-    if type(bar.GetStatusBarTexture) == "function" then fill = bar:GetStatusBarTexture() end
-    if fill ~= nil then
-      local atlas = seg.restedEnd > seg.progress and ns.RESTED_ATLAS or ns.XP_ATLAS
-      pcall(function() fill:SetAtlas(atlas) end)
+    if type(bar.SetAnimatedValues) == "function" then
+      -- Level wraps the ding animation through full and around, the
+      -- way the native bar dings; maxLevel stays nil, which the
+      -- template reads as never-capped, true whenever we show.
+      -- Raw XP, never fractions: the template floors animated values,
+      -- and the floor of a fraction is a vanished fill.
+      bar:SetAnimatedValues(baseline.xp, 0, baseline.req, baseline.level)
+    else
+      bar:SetMinMaxValues(0, baseline.req)
+      bar:SetValue(baseline.xp)
     end
-    if seg.restedEnd > seg.progress then
-      restFill:SetWidth(seg.restedEnd * ns.BAR_WIDTH)
+    barText:SetText(ns.barLabel(baseline, seg))
+    local isRested = seg.restedEnd > seg.progress
+    local atlas = isRested and ns.RESTED_ATLAS or ns.XP_ATLAS
+    if type(bar.SetBarTexture) == "function" then
+      pcall(bar.SetBarTexture, bar, atlas)
+    elseif type(bar.GetStatusBarTexture) == "function" then
+      local fill = bar:GetStatusBarTexture()
+      if fill ~= nil then pcall(function() fill:SetAtlas(atlas, false) end) end
+    end
+    if type(bar.SetAnimationTextures) == "function" then
+      pcall(bar.SetAnimationTextures, bar,
+        isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
+        isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
+    end
+    if isRested and restOk then
+      restFill:SetWidth(seg.restedEnd * ns.TROUGH_WIDTH)
       restFill:Show()
     else
       restFill:Hide()
     end
-    if seg.questEnd > seg.progress then
+    if seg.questEnd > seg.progress and questOk then
       questFill:ClearAllPoints()
-      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * ns.BAR_WIDTH, 0)
+      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * ns.TROUGH_WIDTH, 0)
       questFill:SetPoint("TOP", bar, "TOP", 0, 0)
       questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
-      questFill:SetWidth((seg.questEnd - seg.progress) * ns.BAR_WIDTH)
+      questFill:SetWidth((seg.questEnd - seg.progress) * ns.TROUGH_WIDTH)
       questFill:Show()
     else
       questFill:Hide()
     end
+    -- The rested pip rides the rested reach, hidden at the bar edges
+    -- like the native one (hideAtBarEdge), and hidden without rested.
+    if pipOk and isRested and seg.restedEnd >= 0.01 and seg.restedEnd <= 0.99 then
+      pip:ClearAllPoints()
+      pip:SetPoint("CENTER", bar, "LEFT", seg.restedEnd * ns.TROUGH_WIDTH, 2)
+      pip:Show()
+    else
+      pip:Hide()
+    end
   end
   applyNativeBar()
+  rate:SetText(ns.titleText(est))
+  local stats = seg and ns.subStatsLine(seg, questCount) or nil
+  if stats then
+    sub:SetText(stats)
+    sub:Show()
+  else
+    sub:Hide()
+  end
   frame:SetShown(o.shown)
 end
 
@@ -771,12 +898,12 @@ function ns.showTip()
   GameTooltip:AddLine(ns.titleText(est), COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   if seg then
-    if seg.restedEnd > seg.progress then
+    if seg.restedEnd > seg.progress and seg.restedPct >= 0.5 then
       local pct = math.floor(seg.restedPct + 0.5)
       GameTooltip:AddLine(("Rested: %d%% of level"):format(pct),
         COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
     end
-    if questCount > 0 and seg.questEnd > seg.progress then
+    if questCount > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 then
       local pct = math.floor(seg.questPct + 0.5)
       local noun = questCount == 1 and "quest" or "quests"
       GameTooltip:AddLine(("%d %s ready: %d%% of level"):format(questCount, noun, pct),
@@ -976,7 +1103,7 @@ frame:SetScript("OnDragStop", function()
   frame:StopMovingOrSizing()
   local o = opts()
   local point, _, _, x, y = frame:GetPoint(1)
-  o.point, o.x, o.y = point, x, y
+  o.point, o.x, o.y = point, math.floor(x + 0.5), math.floor(y + 0.5)
 end)
 frame:SetScript("OnEnter", function() ns.showTip() end)
 frame:SetScript("OnLeave", function()
