@@ -27,7 +27,7 @@ too. The label reads level, current and required XP, and percent:
 10  45k/100k (45%)
 ```
 
-Under the bar, a rate line keeps XP/hr and time-to-level on screen (`144k XP/hr · 25m`), and a stats line keeps ready quests and rested reach below it (`2 quests ready: 5% · Rested: 6%`), no hover needed. On the bar itself, progress, quest turn-ins, and rested XP read as three distinct fills: native XP purple, pending-gain orange, prediction blue.
+Under the bar, a rate line keeps XP/hr and time-to-level on screen (`144k XP/hr · 25m`), and a stats line keeps ready quests and rested reach below it (`2 quests ready: 5% · Rested: 6%`), no hover needed. On the bar itself, progress, quest turn-ins, and rested XP stack in the order you would play them, each ending in a hard edge: native XP purple, then the prediction material tinted pending-gain gold for banked quest XP, then prediction blue for rested reach, with the rested pip marking where rested runs out.
 Hover the bar for the payoff, refreshed every second: XP per hour
 over the trailing ten minutes, plus time to next level
 (`144k XP/hr · 25m`). The forecast runs at your
