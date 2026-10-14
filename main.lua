@@ -44,7 +44,7 @@ local COLORS = ns.COLORS
 
 -- Defaults: the single source of truth (FAMILY.md "Settings"). A key
 -- holding the wrong type resets; unknown keys are left alone.
-local defaults = { shown = true, locked = false, point = "CENTER", x = -340, y = 200 }
+local defaults = { shown = true, locked = false, hideDefault = true, point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local function opts()
   if type(ns.db) ~= "table" then ns.db = {} VocXPDB = ns.db end
@@ -276,34 +276,58 @@ function ns.formatEta(sec)
 end
 
 
-local frame = CreateFrame("Frame", "VocXPFrame", UIParent, "BackdropTemplate")
-frame:SetSize(150, 32)
+-- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
+-- a StatusBar wearing the native XP fill atlases, the native
+-- background, prediction-atlas rested and quest overlays, and a
+-- TextStatusBarText label. Fixed size: bars don't autofit.
+ns.BAR_WIDTH = 320
+ns.BAR_HEIGHT = 20
+ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
+ns.RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested"
+ns.PREDICT_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction"
+ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
+
+local frame = CreateFrame("Frame", "VocXPFrame", UIParent)
+frame:SetSize(ns.BAR_WIDTH, ns.BAR_HEIGHT)
 frame:SetMovable(true)
 frame:SetClampedToScreen(true)
-frame:SetBackdrop({
-  bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-  edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-  tile = true, tileSize = 16, edgeSize = 16,
-  insets = { left = 4, right = 4, top = 4, bottom = 4 },
-})
-frame:SetBackdropColor(0, 0, 0, 0.85)
-frame:SetBackdropBorderColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+frame:EnableMouse(true) -- hover tooltip always; lock gates dragging, not looking
 
--- Readout text. Tooltip text hierarchy, straight from the client's own
--- templates (Blizzard_Fonts_Shared/Shared/FontStyles.xml): a header title
--- line, then smaller body lines. Colors set separately via SetTextColor.
--- The body is created before the sub line so the headless stub (which
--- tells same-template strings apart by creation order) routes them.
-local title = frame:CreateFontString(nil, "OVERLAY", "GameTooltipHeaderText")
-title:SetPoint("TOPLEFT", 10, -10)
-title:SetTextColor(COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
-local body = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-local sub = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
-body:SetPoint("TOPLEFT", sub, "BOTTOMLEFT", 0, -4)
-local missed = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-missed:SetPoint("TOPLEFT", body, "BOTTOMLEFT", 0, -4)
-missed:SetTextColor(COLORS.muted[1], COLORS.muted[2], COLORS.muted[3])
+local bar = CreateFrame("StatusBar", nil, frame)
+bar:SetAllPoints(frame)
+bar:SetMinMaxValues(0, 1)
+bar:SetValue(0)
+bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+
+-- Atlases are Blizzard's own art. A missing atlas hides its layer
+-- instead of erroring, so a client without one still shows the bar.
+local function setAtlasOrHide(tex, atlas)
+  if pcall(function() tex:SetAtlas(atlas) end) then return true end
+  tex:Hide()
+  return false
+end
+
+local bg = bar:CreateTexture(nil, "BACKGROUND")
+bg:SetAllPoints(bar)
+setAtlasOrHide(bg, ns.BG_ATLAS)
+
+local restFill = bar:CreateTexture(nil, "ARTWORK", nil, -1)
+restFill:SetPoint("LEFT", bar, "LEFT", 0, 0)
+restFill:SetPoint("TOP", bar, "TOP", 0, 0)
+restFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
+restFill:SetWidth(0)
+setAtlasOrHide(restFill, ns.PREDICT_ATLAS)
+restFill:Hide()
+
+local questFill = bar:CreateTexture(nil, "ARTWORK", nil, 0)
+questFill:SetPoint("TOP", bar, "TOP", 0, 0)
+questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
+questFill:SetWidth(0)
+setAtlasOrHide(questFill, ns.PREDICT_ATLAS)
+questFill:Hide()
+
+local label = bar:CreateFontString(nil, "OVERLAY", "TextStatusBarText")
+label:SetPoint("CENTER", bar, "CENTER", 0, 0)
 
 -- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
@@ -540,12 +564,151 @@ local function missingParts()
   return labels
 end
 
+-- Bar segments ---------------------------------------------------------
+-- Fractions over the current level: where progress ends, how far
+-- rested XP reaches, how far ready-to-turn-in quests reach. All
+-- clamped to [0, 1]; overlays never start before progress. An
+-- invalid or capped snapshot has no bar: nil, never zeros that
+-- would paint a misleading empty bar.
+function ns.barSegments(snap, restedXp, questXp)
+  if not ns.validateSnapshot(snap) or snap.capped then return nil end
+  local r = (type(restedXp) == "number" and restedXp > 0) and restedXp or 0
+  local q = (type(questXp) == "number" and questXp > 0) and questXp or 0
+  local progress = math.max(0, math.min(1, snap.xp / snap.req))
+  local restedEnd = math.max(progress, math.min(1, (snap.xp + r) / snap.req))
+  local questEnd = math.max(progress, math.min(1, (snap.xp + q) / snap.req))
+  return {
+    progress = progress,
+    restedEnd = restedEnd,
+    questEnd = questEnd,
+    pct = progress * 100,
+    restedPct = r / snap.req * 100,
+    questPct = q / snap.req * 100,
+  }
+end
+
+function ns.barLabel(snap, seg)
+  local pct = math.floor(seg.pct + 0.5)
+  return ("%d  %s/%s (%d%%)"):format(snap.level, fmt(snap.xp), fmt(snap.req), pct)
+end
+
+-- Ready-to-turn-in quest XP --------------------------------------------
+-- The payout waiting at quest givers, as raw XP and a quest count.
+-- GetQuestLogRewardXP reads the selected entry, so the scan saves and
+-- restores the selection and never re-enters: a quest event fired
+-- mid-scan re-renders on the previous total instead of recursing. A
+-- missing API anywhere in the chain means no overlay, never an error.
+local questXp, questCount, scanning = 0, 0, false
+
+function ns.scanQuestXp()
+  if scanning then return questXp, questCount end
+  if type(C_QuestLog) ~= "table" or type(GetQuestLogRewardXP) ~= "function" then
+    questXp, questCount = 0, 0
+    return questXp, questCount
+  end
+  local QL = C_QuestLog
+  if type(QL.GetNumQuestLogEntries) ~= "function"
+      or type(QL.GetInfo) ~= "function"
+      or type(QL.ReadyForTurnIn) ~= "function"
+      or type(QL.GetSelectedQuest) ~= "function"
+      or type(QL.SetSelectedQuest) ~= "function" then
+    questXp, questCount = 0, 0
+    return questXp, questCount
+  end
+  scanning = true
+  local ok, total, count = pcall(function()
+    local shown = QL.GetNumQuestLogEntries()
+    if type(shown) ~= "number" then return 0, 0 end
+    local sel = QL.GetSelectedQuest()
+    local sum, n = 0, 0
+    for i = 1, shown do
+      local info = QL.GetInfo(i)
+      if type(info) == "table" and not info.isHeader
+          and type(info.questID) == "number"
+          and QL.ReadyForTurnIn(info.questID) then
+        QL.SetSelectedQuest(info.questID)
+        local xp = GetQuestLogRewardXP()
+        if type(xp) == "number" and xp > 0 then sum, n = sum + xp, n + 1 end
+      end
+    end
+    if type(sel) == "number" and sel ~= 0 then QL.SetSelectedQuest(sel) end
+    return sum, n
+  end)
+  scanning = false
+  if ok then questXp, questCount = total, count else questXp, questCount = 0, 0 end
+  return questXp, questCount
+end
+
+-- Rested XP as a number, or nil when there is none to draw. Blizzard
+-- hides the rested layer while XP gain is disabled, so do we; a
+-- missing API there means XP assumed enabled, never a missing bar.
+local function restedAmount()
+  if type(IsXPUserDisabled) == "function" and IsXPUserDisabled() then return nil end
+  if type(GetXPExhaustion) ~= "function" then return nil end
+  local v = GetXPExhaustion()
+  if type(v) ~= "number" or v <= 0 then return nil end
+  return v
+end
+
+-- The native cluster hides wholesale while ours shows: Blizzard offers
+-- no per-bar switch, so watched reputation and honor hide with the XP
+-- bar and the setting tooltip says so. Re-applied every refresh
+-- because Edit Mode sessions may reshow it; restored the moment we
+-- stop hiding, including the max-level shutdown.
+local nativeHiddenByUs = false
+
+local function applyNativeBar()
+  if type(StatusTrackingBarManager) ~= "table" then return end
+  local mgr = StatusTrackingBarManager
+  if type(mgr.IsShown) ~= "function" or type(mgr.Hide) ~= "function"
+      or type(mgr.Show) ~= "function" then return end
+  local o = opts()
+  local wantHidden = o.hideDefault and o.shown and not (baseline and baseline.capped)
+  if wantHidden then
+    if mgr:IsShown() then mgr:Hide() end
+    nativeHiddenByUs = true
+  elseif nativeHiddenByUs then
+    mgr:Show()
+    nativeHiddenByUs = false
+  end
+end
+
+-- Edit Mode cooperation --------------------------------------------------
+-- VocXP never joins Edit Mode (no supported API; the evidence lives in
+-- .reference/api-verification.md), but an arranging session should
+-- include our bar: while Edit Mode is open the bar drags even when
+-- locked. Derived, never persisted: a reload mid-session restores the
+-- saved lock on its own. No EventRegistry, no cooperation: dragging
+-- behaves exactly as it always has.
+ns.editModeActive = false
+
+function ns.setEditModeActive(active)
+  ns.editModeActive = active and true or false
+end
+
+local editSubscribed = false
+function ns.subscribeEditMode()
+  if editSubscribed then return end
+  if type(EventRegistry) ~= "table" then return end
+  if type(EventRegistry.RegisterCallback) ~= "function" then return end
+  local ok = pcall(EventRegistry.RegisterCallback, EventRegistry, "EditMode.Enter",
+    function() ns.setEditModeActive(true) end)
+  local ok2 = pcall(EventRegistry.RegisterCallback, EventRegistry, "EditMode.Exit",
+    function() ns.setEditModeActive(false) end)
+  if ok and ok2 then editSubscribed = true end
+end
+
+local function draggable()
+  return (not opts().locked) or ns.editModeActive
+end
+
 local function refresh()
   local o = opts()
   local now = GetTime()
   local est = ns.estimate(rateTracker, now, baseline, paused)
   if est.status == "capped" then
     frame:SetShown(false)
+    applyNativeBar()
     return
   end
   -- The ETA reads the longer basis (which also prunes it); the rate
@@ -554,35 +717,92 @@ local function refresh()
   if est.etaSeconds and (est.remainingXp or 0) > 0 then
     est.etaSeconds = longEta or est.etaSeconds
   end
-  title:SetText(ns.titleText(est))
-  sub:SetText(ns.subText(est))
-  local bonuses = bonusParts()
-  if #bonuses == 0 then
-    body:SetTextColor(COLORS.red[1], COLORS.red[2], COLORS.red[3])
-    body:SetText("No XP bonus")
-  else
-    body:SetTextColor(COLORS.green[1], COLORS.green[2], COLORS.green[3])
-    body:SetText(table.concat(bonuses, "\n"))
+  local seg = ns.barSegments(baseline, restedAmount(), questXp)
+  if seg then
+    bar:SetValue(seg.progress)
+    label:SetText(ns.barLabel(baseline, seg))
+    local fill = nil
+    if type(bar.GetStatusBarTexture) == "function" then fill = bar:GetStatusBarTexture() end
+    if fill ~= nil then
+      local atlas = seg.restedEnd > seg.progress and ns.RESTED_ATLAS or ns.XP_ATLAS
+      pcall(function() fill:SetAtlas(atlas) end)
+    end
+    if seg.restedEnd > seg.progress then
+      restFill:SetWidth(seg.restedEnd * ns.BAR_WIDTH)
+      restFill:Show()
+    else
+      restFill:Hide()
+    end
+    if seg.questEnd > seg.progress then
+      questFill:ClearAllPoints()
+      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * ns.BAR_WIDTH, 0)
+      questFill:SetPoint("TOP", bar, "TOP", 0, 0)
+      questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
+      questFill:SetWidth((seg.questEnd - seg.progress) * ns.BAR_WIDTH)
+      questFill:Show()
+    else
+      questFill:Hide()
+    end
   end
-  local missing = missingParts()
-  if #missing == 0 then
-    missed:SetText("")
-  else
-    missed:SetText(table.concat(missing, "\n"))
-  end
-  local w = math.max(title:GetStringWidth(), sub:GetStringWidth(), body:GetStringWidth())
-  local h = title:GetStringHeight() + 4 + sub:GetStringHeight() + 4 + body:GetStringHeight()
-  if missed:GetText() ~= "" then
-    w = math.max(w, missed:GetStringWidth())
-    h = h + 4 + missed:GetStringHeight()
-  end
-  frame:SetSize(w + 20, h + 20)
+  applyNativeBar()
   frame:SetShown(o.shown)
 end
 
+-- The tooltip carries the engine the bar replaced: the rate line, the
+-- rested and quest reach, the bonus list, and the missing list. It
+-- never fires mid-drag: our own drag flag guards it, which keeps the
+-- promise without touching an unverified global.
+local dragging = false
+
+function ns.showTip()
+  if dragging then return end
+  if type(GameTooltip) ~= "table" then return end
+  local est = ns.estimate(rateTracker, GetTime(), baseline, paused)
+  -- The same longer ETA basis refresh() applies, so the tooltip and
+  -- the bar never disagree about time-to-level.
+  local longEta = ns.etaSeconds(etaTracker, GetTime(), est.remainingXp or 0)
+  if est.etaSeconds and (est.remainingXp or 0) > 0 then
+    est.etaSeconds = longEta or est.etaSeconds
+  end
+  local seg = ns.barSegments(baseline, restedAmount(), questXp)
+  GameTooltip:SetOwner(frame, "ANCHOR_TOP")
+  GameTooltip:ClearLines()
+  GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+  GameTooltip:AddLine(ns.titleText(est), COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  if seg then
+    if seg.restedEnd > seg.progress then
+      local pct = math.floor(seg.restedPct + 0.5)
+      GameTooltip:AddLine(("Rested: %d%% of level"):format(pct),
+        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    end
+    if questCount > 0 and seg.questEnd > seg.progress then
+      local pct = math.floor(seg.questPct + 0.5)
+      local noun = questCount == 1 and "quest" or "quests"
+      GameTooltip:AddLine(("%d %s ready: %d%% of level"):format(questCount, noun, pct),
+        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    end
+  end
+  local bonuses = bonusParts()
+  if #bonuses == 0 then
+    GameTooltip:AddLine("No XP bonus", COLORS.red[1], COLORS.red[2], COLORS.red[3], true)
+  else
+    for _, b in ipairs(bonuses) do
+      GameTooltip:AddLine(b, COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
+    end
+  end
+  for _, m in ipairs(missingParts()) do
+    GameTooltip:AddLine(m, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
+  GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
+    COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  GameTooltip:Show()
+end
+
 -- At max level the addon goes fully dormant: no ticker, no hot
--- events. PLAYER_ENTERING_WORLD stays registered as the wake path
--- (loading screens only); a cap raise restarts everything there.
+-- events, and the native bar comes back. PLAYER_ENTERING_WORLD stays
+-- registered as the wake path (loading screens only); a cap raise
+-- restarts everything there.
 local ticker
 local function shutdown()
   frame:SetShown(false)
@@ -592,6 +812,14 @@ local function shutdown()
   frame:UnregisterEvent("PLAYER_LEVEL_UP")
   frame:UnregisterEvent("UNIT_AURA")
   frame:UnregisterEvent("PLAYER_EQUIPMENT_CHANGED")
+  frame:UnregisterEvent("UPDATE_EXHAUSTION")
+  frame:UnregisterEvent("PLAYER_UPDATE_RESTING")
+  frame:UnregisterEvent("QUEST_LOG_UPDATE")
+  frame:UnregisterEvent("QUEST_TURNED_IN")
+  frame:UnregisterEvent("QUEST_ACCEPTED")
+  frame:UnregisterEvent("QUEST_REMOVED")
+  frame:UnregisterEvent("QUEST_COMPLETE")
+  applyNativeBar()
 end
 
 local function readSnapshot()
@@ -622,7 +850,7 @@ local function onXP()
   refresh()
 end
 
--- Blizzard Settings panel (Settings > AddOns > VocXP): the same two
+-- Blizzard Settings panel (Settings > AddOns > VocXP): the same
 -- options the slash line toggles, bound to the live SavedVariables
 -- table so the panel and `/vxp` always agree, applied the moment they
 -- change. Built once, after SavedVariables land, and only if the
@@ -632,8 +860,6 @@ function ns.onSettingChanged(setting, fn)
     setting:SetValueChangedCallback(fn)
   end
 end
-
-local applyLock -- forward: the panel and the slash line share it
 
 ns.settingsBuilt = false
 function ns.ensureSettings()
@@ -649,12 +875,15 @@ function ns.ensureSettings()
     Settings.CreateCheckbox(category, s, tooltip)
     ns.onSettingChanged(s, onChange)
   end
-  check("shown", "Show the readout",
-    "Show XP/hr, time to level, and your active XP bonuses. Max-level characters never see it.",
+  check("shown", "Show the bar",
+    "Show the XP bar with XP/hr, time to level, and your active XP bonuses. Max-level characters never see it.",
+    function() refresh() end)
+  check("hideDefault", "Hide the default XP bar",
+    "Hide Blizzard's status bar cluster while VocXP shows. Watched reputation and honor bars hide with it.",
     function() refresh() end)
   check("locked", "Lock the position",
-    "Keep the readout where it is. Unlocked, drag it anywhere; it remembers.",
-    function() applyLock() end)
+    "Keep the bar where it is. Unlocked, drag it anywhere; it remembers.",
+    function() refresh() end)
   ns.settingsBuilt = true
   ns.settingsCategory = category
 end
@@ -694,6 +923,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     end
     if snap.capped then baseline = snap shutdown() return end
     baseline = snap -- zone loads carry no timestamped gains: resync, add nothing
+    ns.scanQuestXp()
+    ns.subscribeEditMode()
     local o = opts()
     frame:ClearAllPoints()
     frame:SetPoint(o.point, UIParent, o.point, o.x, o.y)
@@ -701,36 +932,58 @@ frame:SetScript("OnEvent", function(_, event, arg1)
     frame:RegisterEvent("PLAYER_LEVEL_UP")
     frame:RegisterEvent("UNIT_AURA")
     frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+    frame:RegisterEvent("UPDATE_EXHAUSTION")
+    frame:RegisterEvent("PLAYER_UPDATE_RESTING")
+    frame:RegisterEvent("QUEST_LOG_UPDATE")
+    frame:RegisterEvent("QUEST_TURNED_IN")
+    frame:RegisterEvent("QUEST_ACCEPTED")
+    frame:RegisterEvent("QUEST_REMOVED")
+    frame:RegisterEvent("QUEST_COMPLETE")
     if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
-    applyLock()
+    if o.hideDefault and o.shown and not o.barAnnounced then
+      o.barAnnounced = true
+      ns.say("the default XP bar hides while VocXP shows (/vxp config to change it)")
+    end
   else
     if event == "UNIT_AURA" then
       if arg1 ~= "player" then return end
     elseif event == "PLAYER_XP_UPDATE" then
       onXP()
+    elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN"
+        or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED"
+        or event == "QUEST_COMPLETE" then
+      ns.scanQuestXp()
     end
     -- PLAYER_LEVEL_UP falls through to a bare re-render: the XP path
     -- is the single authoritative award source, so a ding never adds
     -- anything here and event order cannot double-count it.
-    -- PLAYER_EQUIPMENT_CHANGED falls through the same way: a gear swap
-    -- only re-renders, which refreshes the Regalia lines at once.
+    -- PLAYER_EQUIPMENT_CHANGED, UPDATE_EXHAUSTION, and
+    -- PLAYER_UPDATE_RESTING fall through the same way: a gear swap or
+    -- a rest change only re-renders, which refreshes the Regalia,
+    -- rested, and quest lines at once.
   end
   refresh()
 end)
 
--- Drag to move; position persists in VocXPDB.
+-- Drag to move; position persists in VocXPDB. Lock gates the drag, and
+-- an open Edit Mode session tempers the lock (see cooperation above).
 frame:RegisterForDrag("LeftButton")
 frame:SetScript("OnDragStart", function()
-  if not opts().locked then frame:StartMoving() end
+  if draggable() then dragging = true frame:StartMoving() end
 end)
 frame:SetScript("OnDragStop", function()
+  dragging = false
   frame:StopMovingOrSizing()
   local o = opts()
   local point, _, _, x, y = frame:GetPoint(1)
   o.point, o.x, o.y = point, x, y
 end)
+frame:SetScript("OnEnter", function() ns.showTip() end)
+frame:SetScript("OnLeave", function()
+  if type(GameTooltip) == "table" then GameTooltip:Hide() end
+end)
 
--- The one main action: show or hide the readout. Shared by the bare
+-- The one main action: show or hide the bar. Shared by the bare
 -- slash command and the addon compartment.
 function ns.toggle()
   local o = opts()
@@ -744,16 +997,10 @@ function ns.toggle()
   end
 end
 
--- Lock state applied to the frame; the panel's callback and the slash
--- line both route here so the two can never disagree.
-function applyLock()
-  frame:EnableMouse(not opts().locked)
-end
-
 function ns.setLocked(on)
   local o = opts()
   o.locked = on
-  applyLock()
+  refresh()
   click(o.locked)
   ns.say(o.locked and "locked" or "unlocked, drag to move")
 end
@@ -769,8 +1016,9 @@ end
 function VocXP_CompartmentEnter(_, button)
   if type(GameTooltip) ~= "table" then return end
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+  GameTooltip:ClearLines()
   GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
-  GameTooltip:AddLine("Session XP/hr and active XP bonuses in one tiny readout.",
+  GameTooltip:AddLine("Session XP/hr and active XP bonuses on an elegant XP bar.",
     COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
     COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
@@ -785,7 +1033,7 @@ end
 -- does the one main thing, `config` opens the panel, `help` lists the
 -- rest, and anything unrecognized prints help instead of acting.
 ns.HELP = {
-  "/vxp           show or hide the readout",
+  "/vxp           show or hide the bar",
   "/vxp lock      lock or unlock the position",
   "/vxp pause     pause or resume tracking",
   "/vxp reset     restart the session",
