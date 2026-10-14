@@ -18,7 +18,7 @@ same package runs on Retail and on the Forever client.
 
 ## Use
 
-A single XP bar built from Blizzard's own bar art. Drag it anywhere;
+A single XP bar built from Blizzard's own bar art and animated bar template, so gains sweep, dings flash, and the rested pip rides like the default bar. Drag it anywhere;
 it remembers where you put it, and it drags during Edit Mode sessions
 even when locked. The addon compartment on the minimap toggles it
 too. The label reads level, current and required XP, and percent:
@@ -27,6 +27,7 @@ too. The label reads level, current and required XP, and percent:
 10  45k/100k (45%)
 ```
 
+Under the bar, a rate line keeps XP/hr and time-to-level on screen (`144k XP/hr · 25m`), and a stats line keeps ready quests and rested reach below it (`2 quests ready: 5% · Rested: 6%`), no hover needed. On the bar itself, progress, quest turn-ins, and rested XP read as three distinct fills: native XP purple, pending-gain orange, prediction blue.
 Hover the bar for the payoff, refreshed every second: XP per hour
 over the trailing ten minutes, plus time to next level
 (`144k XP/hr · 25m`). The forecast runs at your
