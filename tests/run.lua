@@ -3,8 +3,8 @@
 -- Works on Lua 5.1 (the client's dialect) and 5.2+.
 --
 -- Convention: each test builds a fresh stub world, drives the frame's
--- OnEvent/OnDrag scripts or the slash handler, and asserts. Any failed
--- assert aborts with the test name.
+-- OnEvent/OnDrag/OnEnter scripts or the slash handler, and asserts.
+-- Any failed assert aborts with the test name.
 
 local testDir = debug.getinfo(1, "S").source:gsub("\\", "/"):match("@?(.*/)") or ""
 local mainPath = testDir .. "../main.lua"
@@ -15,14 +15,15 @@ local function check(name, cond)
   passed = passed + 1
 end
 
--- Expected readout: title line, body lines, body color.
+-- Expected bar state: progress value, label text, overlay widths.
 local GREEN_C = { 0.25, 0.9, 0.35 }
 local RED_C = { 0.9, 0.3, 0.25 }
-local function readout(w, title, body, c)
-  local bc = w.frame.body.color or {}
-  return w.frame.title.text == title
-    and w.frame.body.text == body
-    and bc[1] == c[1] and bc[2] == c[2] and bc[3] == c[3]
+local GOLD_C = { 1, 0.82, 0 }
+local MUTED_C = { 0.5, 0.5, 0.5 }
+
+-- Float-tolerant equality for rates, ETAs, and bar fractions.
+local function close(a, b)
+  return math.abs(a - b) <= math.max(1e-9 * math.abs(b), 1e-9)
 end
 
 -- Fresh stub world per test.
@@ -37,7 +38,32 @@ local function loadAddon(world)
   g.UnitXPMax = function() return world.max end
   g.UnitLevel = function() return world.level end
   g.UnitGUID = function() return world.guid end
-  g.GetXPExhaustion = function() return world.rested and 1 or nil end
+  g.GetXPExhaustion = function() return world.restedXp end
+  g.IsXPUserDisabled = function() return world.xpDisabled end
+  g.GetQuestLogRewardXP = function() return world.questReward[world.selectedQuest] end
+  g.C_QuestLog = {
+    GetNumQuestLogEntries = function() return #world.quests end,
+    GetInfo = function(i)
+      local q = world.quests[i]
+      if q == nil then return nil end
+      return { questID = q.id, isHeader = q.header == true }
+    end,
+    ReadyForTurnIn = function(id) return world.ready[id] end,
+    GetSelectedQuest = function() return world.selectedQuest end,
+    SetSelectedQuest = function(id)
+      world.selectedQuest = id
+      world.selectLog[#world.selectLog + 1] = id
+    end,
+  }
+  g.EventRegistry = {
+    RegisterCallback = function(_, event, fn) world.editCallbacks[event] = fn end,
+  }
+  local native = { shown = true }
+  native.IsShown = function(self) return self.shown end
+  native.Hide = function(self) self.shown = false end
+  native.Show = function(self) self.shown = true end
+  g.StatusTrackingBarManager = native
+  world.native = native
   g.C_PvP = {
     IsWarModeDesired = function() return world.warMode end,
     GetWarModeRewardBonus = function() return world.warBonus end,
@@ -63,8 +89,11 @@ local function loadAddon(world)
   g.PlaySound = function(id) world.sounds[#world.sounds + 1] = id end
   g.GameTooltip = {
     SetOwner = function(_, owner, anchor) world.gametip.owner, world.gametip.anchor = owner, anchor end,
+    ClearLines = function() world.gametip.lines = {} end,
     SetText = function(_, t, r, gg, b) world.gametip.title = t world.gametip.titleColor = { r, gg, b } end,
-    AddLine = function(_, t) world.gametip.lines[#world.gametip.lines + 1] = t end,
+    AddLine = function(_, t, r, gg, b)
+      world.gametip.lines[#world.gametip.lines + 1] = { text = t, r = r, g = gg, b = b }
+    end,
     Show = function() world.gametip.shown = true end,
     Hide = function() world.gametip.shown = false end,
   }
@@ -96,8 +125,25 @@ local function loadAddon(world)
   }
   g.UIParent = {}
   g.SlashCmdList = {}
+  local function newTexture()
+    local t = { shown = true, width = 0, points = {} }
+    t.SetAtlas = function(_, a) t.atlas = a end
+    t.SetTexture = function(_, f) t.file = f end
+    t.SetAllPoints = function() t.allPoints = true end
+    t.SetPoint = function(_, p, rel, rp, x, y)
+      t.points[#t.points + 1] = { p, rel, rp, x, y }
+    end
+    t.ClearAllPoints = function() t.points = {} end
+    t.SetWidth = function(_, w) t.width = w end
+    t.SetShown = function(_, s) t.shown = s end
+    t.Hide = function() t.shown = false end
+    t.Show = function() t.shown = true end
+    t.IsShown = function() return t.shown end
+    return t
+  end
   g.CreateFrame = function(ftype, _, _, template)
-    local f = { events = {}, scripts = {}, ctype = ftype, template = template }
+    local f = { events = {}, scripts = {}, ctype = ftype, template = template,
+                strings = {}, textures = {} }
     f.SetSize = function(_, w, h) f.size = { w, h } end
     f.SetMovable = function(_, m) f.movable = m end
     f.SetClampedToScreen = function(_, c) f.clamped = (c == nil) and true or c end
@@ -106,9 +152,7 @@ local function loadAddon(world)
     f.RegisterForDrag = function(_, b) f.dragButton = b end
     f.EnableMouse = function(_, m) f.mouse = m end
     f.SetShown = function(_, s) f.shown = s end
-    f.SetBackdrop = function(_, b) f.backdrop = b end
-    f.SetBackdropColor = function(_, r, gg, bb, a) f.backdropColor = { r, gg, bb, a } end
-    f.SetBackdropBorderColor = function(_, r, gg, bb) f.borderColor = { r, gg, bb } end
+    f.SetAllPoints = function() f.allPoints = true end
     f.SetScript = function(_, sname, fn) f.scripts[sname] = fn end
     -- The client ignores StartMoving on a non-movable frame; emulate
     -- that so the drag tests fail if SetMovable(true) ever goes missing.
@@ -117,6 +161,18 @@ local function loadAddon(world)
     f.ClearAllPoints = function() f.point = nil end
     f.SetPoint = function(_, p, _, _, x, y) f.point = { p, x, y } end
     f.GetPoint = function() return f.point[1], nil, nil, f.point[2], f.point[3] end
+    f.SetMinMaxValues = function(_, lo, hi) f.minmax = { lo, hi } end
+    f.SetValue = function(_, v) f.value = v end
+    f.SetStatusBarTexture = function(_, tx) f.barTexture = tx end
+    f.GetStatusBarTexture = function()
+      if f.fillTex == nil then f.fillTex = newTexture() end
+      return f.fillTex
+    end
+    f.CreateTexture = function()
+      local t = newTexture()
+      f.textures[#f.textures + 1] = t
+      return t
+    end
     f.CreateFontString = function(_, _, _, tmpl)
       local t = { template = tmpl, text = "" }
       t.SetPoint = function() end
@@ -126,14 +182,7 @@ local function loadAddon(world)
       t.SetTextColor = function(_, r, gg, b) t.color = { r, gg, b } end
       t.GetStringWidth = function() return 100 end
       t.GetStringHeight = function() return 30 end
-      -- Same-template strings route by creation order: main.lua creates
-      -- the body before the sub line, so the first GameTooltipText is
-      -- the body and the second is the sub line; a third is the
-      -- missing-buff section.
-      if tmpl == "GameTooltipHeaderText" then f.title = t
-      elseif f.body == nil then f.body = t
-      elseif f.sub == nil then f.sub = t
-      else f.missed = t end
+      f.strings[#f.strings + 1] = t
       return t
     end
     world.frames[#world.frames + 1] = f
@@ -154,7 +203,12 @@ local function loadAddon(world)
   end
   local ns = {}
   chunk("VocXP", ns)
-  world.frame = world.frames[1] -- the readout frame, created at load
+  world.frame = world.frames[1] -- the bar frame, created at load
+  world.bar = world.frames[2] -- the StatusBar inside it
+  world.bg = world.bar.textures[1]
+  world.restFill = world.bar.textures[2]
+  world.questFill = world.bar.textures[3]
+  world.label = world.bar.strings[1]
   world.ns = ns
   world.env = g
   return ns
@@ -162,8 +216,11 @@ end
 
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
-           rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
+           restedXp = nil, xpDisabled = false, warMode = false, warBonus = 10,
+           inInstance = false, auras = {},
            addonInterfaceVersion = 120105,
+           quests = {}, ready = {}, questReward = {}, selectedQuest = 0, selectLog = {},
+           editCallbacks = {},
            slotIDs = { HeadSlot = 1, NeckSlot = 2, ShoulderSlot = 3, BackSlot = 15,
                        ChestSlot = 5, LegsSlot = 7, Finger0Slot = 11, Finger1Slot = 12 },
            equipped = {}, slotQueries = {},
@@ -183,97 +240,216 @@ local function levelEvent(w)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_LEVEL_UP", w.level)
 end
 
-local function missedline(w)
-  return w.frame.missed and w.frame.missed.text
+local function xpEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_XP_UPDATE")
+end
+
+-- Hover the bar: the client clears and rebuilds the tooltip per show.
+local function hover(w)
+  w.frame.scripts.OnEnter(w.frame)
+end
+
+local function tiptexts(w)
+  local out = {}
+  for _, l in ipairs(w.gametip.lines) do out[#out + 1] = l.text end
+  return out
+end
+
+local function tiphas(w, text)
+  for _, t in ipairs(tiptexts(w)) do if t == text then return true end end
+  return false
+end
+
+local function tipcolor(w, text)
+  for _, l in ipairs(w.gametip.lines) do
+    if l.text == text then return { l.r, l.g, l.b } end
+  end
+  return nil
+end
+
+local function sameColor(c, want)
+  return c ~= nil and c[1] == want[1] and c[2] == want[2] and c[3] == want[3]
 end
 
 local function wear(w, ...)
   for _, slotName in ipairs({ ... }) do w.equipped[w.slotIDs[slotName]] = 7 end
 end
 
-local function subline(w)
-  return w.frame.sub and w.frame.sub.text
+local function setQuests(w, list)
+  -- list: { { id = n, xp = n|nil, ready = bool, header = bool } }
+  w.quests, w.ready, w.questReward = {}, {}, {}
+  for _, q in ipairs(list) do
+    w.quests[#w.quests + 1] = { id = q.id, header = q.header }
+    if q.ready then w.ready[q.id] = true end
+    if q.xp ~= nil then w.questReward[q.id] = q.xp end
+  end
 end
 
--- Float-tolerant equality for rates and ETAs: exact for the integer
--- cases, honest about division rounding everywhere else.
-local function close(a, b)
-  return math.abs(a - b) <= math.max(1e-9 * math.abs(b), 1e-9)
-end
-
-local function xpEvent(w)
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_XP_UPDATE")
-end
-
--- 1. SavedVariables rebind.
+-- 1. SavedVariables rebind, defaults, and the one-time notice.
 do
   local w = newWorld()
-  w.savedVars = { shown = false, locked = true, point = "TOPLEFT", x = 10, y = -20 }
+  w.savedVars = { shown = false, locked = true, hideDefault = false,
+                  point = "TOPLEFT", x = 10, y = -20 }
   local ns = loadAddon(w)
   clientLoaded(w)
   check("db rebind keeps saved shown=false", ns.db.shown == false)
   check("db rebind keeps saved locked=true", ns.db.locked == true)
+  check("db rebind keeps saved hideDefault=false", ns.db.hideDefault == false)
   check("db rebind keeps saved position", ns.db.point == "TOPLEFT" and ns.db.x == 10 and ns.db.y == -20)
   check("rebound frame hidden", w.frame.shown == false)
   check("rebound frame positioned", w.frame.point[1] == "TOPLEFT" and w.frame.point[2] == 10 and w.frame.point[3] == -20)
-  check("rebound frame mouse off", w.frame.mouse == false)
+  check("mouse stays on for the tooltip", w.frame.mouse == true)
+  check("opt-out keeps the native bar", w.native.shown == true)
+  check("opt-out skips the notice", #w.printed == 0)
 end
-
--- 2. Fresh profile gets all defaults.
-do
+do -- fresh profile gets all defaults and hides the native bar
   local w = newWorld()
   local ns = loadAddon(w)
   clientLoaded(w)
   check("fresh shown defaults true", ns.db.shown == true)
   check("fresh locked defaults false", ns.db.locked == false)
-  check("fresh position defaults", ns.db.point == "CENTER" and ns.db.x == -340 and ns.db.y == 200)
+  check("fresh hideDefault defaults true", ns.db.hideDefault == true)
+  check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
   check("fresh frame shown", w.frame.shown == true)
-  check("fresh frame mouse on", w.frame.mouse == true)
-  check("fresh collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
+  check("fresh native hidden", w.native.shown == false)
+  check("fresh announces once", #w.printed == 1 and w.printed[1] ==
+    "|cff66ccffVocXP|r: the default XP bar hides while VocXP shows (/vxp config to change it)")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("notice never repeats", #w.printed == 1)
 end
 
--- 3. Drag wiring (movable so OnDragStart can move the frame).
+-- 2. Bar construction mirrors Blizzard's ExpStatusBarTemplate.
 do
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
+  check("frame is a fixed bar", w.frame.size[1] == 320 and w.frame.size[2] == 20)
+  check("bar spans 0 to 1", w.bar.minmax[1] == 0 and w.bar.minmax[2] == 1)
+  check("bar wears the native fill file",
+    w.bar.barTexture == "Interface\\TargetingFrame\\UI-StatusBar")
+  check("background atlas", w.bg.atlas == "UI-HUD-ExperienceBar-Background")
+  check("overlays wear the prediction atlas",
+    w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction"
+    and w.questFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
+  check("overlays start hidden", w.restFill.shown == false and w.questFill.shown == false)
+  check("label uses the status bar font", w.label.template == "TextStatusBarText")
   check("frame movable", w.frame.movable == true)
   check("frame clamped", w.frame.clamped == true)
   check("frame drags on left button", w.frame.dragButton == "LeftButton")
 end
 
--- 4. XP gain accumulates into the session rate.
+-- 3. Bar render: progress, label, and both overlays.
 do
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 1800
   w.xp = 500
   xpEvent(w)
-  check("rate text", readout(w, "3k XP/hr · 15m", "No XP bonus", RED_C))
-  check("rate sub", subline(w) == "Last 10m")
+  check("progress value", close(w.bar.value, 0.5))
+  check("bar label", w.label.text == "10  500/1k (50%)")
+  check("unrested fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Experience")
 end
-
--- 5. Level-up carries the remainder across the bar.
-do
+do -- rested overlay reaches past progress and swaps the fill
   local w = newWorld()
-  w.xp, w.max = 900, 1000
+  w.restedXp = 300
   loadAddon(w)
   clientLoaded(w)
-  w.xp, w.max, w.level = 100, 2000, 11
-  w.now = w.now + 3600
+  w.xp = 500
   xpEvent(w)
-  check("level-up carries", readout(w, "1k XP/hr · 2h23m", "No XP bonus", RED_C))
-  check("level-up sub", subline(w) == "Last 10m")
+  check("rested overlay shown", w.restFill.shown == true)
+  check("rested overlay width", close(w.restFill.width, 256))
+  check("rested fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Rested")
+  hover(w)
+  check("tooltip rested line", tiphas(w, "Rested: 30% of level"))
+end
+do -- exhaustion events repaint the rested layer
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  check("exhaustion events registered",
+    w.frame.events.UPDATE_EXHAUSTION == true and w.frame.events.PLAYER_UPDATE_RESTING == true)
+  w.restedXp = 1000
+  w.frame.scripts.OnEvent(w.frame, "UPDATE_EXHAUSTION")
+  check("exhaustion paints rested", w.restFill.shown == true and close(w.restFill.width, 320))
+  w.restedXp = nil
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_UPDATE_RESTING")
+  check("rest change clears rested", w.restFill.shown == false)
+end
+do -- disabled XP gain hides the rested layer like the native bar
+  local w = newWorld()
+  w.restedXp = 500
+  w.xpDisabled = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("xp-disabled hides rested", w.restFill.shown == false)
+  check("xp-disabled keeps xp fill", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Experience")
+end
+do -- quest overlay spans from progress to the turn-in reach
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 200, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("quest overlay shown", w.questFill.shown == true)
+  check("quest overlay starts at progress", close(w.questFill.points[1][4], 160))
+  check("quest overlay width", close(w.questFill.width, 96))
+  hover(w)
+  check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
+end
+do -- one quest reads singular
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  setQuests(w, { { id = 11, xp = 1000, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  hover(w)
+  check("tooltip one quest", tiphas(w, "1 quest ready: 100% of level"))
+end
+do -- overlays clamp at the bar edge, never past it
+  local w = newWorld()
+  w.restedXp = 5000
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  setQuests(w, { { id = 11, xp = 5000, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("rested clamps", close(w.restFill.width, 320))
+  check("quest clamps", close(w.questFill.width, 160))
 end
 
--- 6. Max-level characters never show the readout.
+-- 4. Segment math is pure and total: nil for no-bar, clamped else.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local seg = ns.barSegments({ level = 10, xp = 250, req = 1000, capped = false }, 250, 500)
+  check("segment fractions", close(seg.progress, 0.25) and close(seg.restedEnd, 0.5)
+    and close(seg.questEnd, 0.75))
+  check("segment percents", close(seg.pct, 25) and close(seg.restedPct, 25) and close(seg.questPct, 50))
+  check("segment label", ns.barLabel({ level = 10, xp = 250, req = 1000 }, seg) == "10  250/1k (25%)")
+  check("label rounds half up",
+    ns.barLabel({ level = 10, xp = 1, req = 200 }, ns.barSegments(
+      { level = 10, xp = 1, req = 200, capped = false })) == "10  1/200 (1%)")
+  check("capped has no bar", ns.barSegments({ level = 80, xp = 0, req = 0, capped = true }) == nil)
+  check("invalid has no bar", ns.barSegments({ level = 10, xp = 500 }, 10, 10) == nil)
+  check("nil has no bar", ns.barSegments(nil, 10, 10) == nil)
+  local bad = ns.barSegments({ level = 10, xp = 500, req = 1000, capped = false }, -5, 0 / 0)
+  check("bad overlays vanish", bad.restedEnd == bad.progress and bad.questEnd == bad.progress)
+  local over = ns.barSegments({ level = 10, xp = 900, req = 1000, capped = false }, 500, 500)
+  check("overlays clamp at full", over.restedEnd == 1 and over.questEnd == 1)
+end
+
+-- 5. Max-level characters never show the bar; the native bar returns.
 do
   local w = newWorld()
   w.xp, w.max = 0, 0
   loadAddon(w)
   clientLoaded(w)
   check("max level hidden", w.frame.shown == false)
+  check("max level restores native", w.native.shown == true)
+  check("max level skips the notice", #w.printed == 0)
 end
 do -- cap raised later: next login wakes everything back up
   local w = newWorld()
@@ -283,8 +459,9 @@ do -- cap raised later: next login wakes everything back up
   w.max = 100000
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   check("cap raise reshows", w.frame.shown == true)
+  check("cap raise rehides native", w.native.shown == false)
   check("cap raise restarts ticker", #w.tickers == 1)
-  check("cap raise collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
+  check("cap raise repaints", w.label.text == "10  0/100k (0%)")
 end
 do -- toggle at max level keeps the pref but says so
   local w = newWorld()
@@ -296,107 +473,262 @@ do -- toggle at max level keeps the pref but says so
   check("max toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden)")
 end
 
--- 7. Bonus lines.
-do
+-- 6. Native-bar hiding is enforced every refresh and restored on exit.
+do -- toggling our bar restores and rehides the native one
   local w = newWorld()
-  w.warMode = true
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode line", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
-  check("war mode sub", subline(w) == "Warming up · last 1m of 10m")
+  local slash = w.env.SlashCmdList.VOCXP
+  slash("")
+  check("our hide restores native", w.native.shown == true)
+  slash("")
+  check("our show rehides native", w.native.shown == false)
 end
-do
+do -- an Edit Mode reshow lasts at most one refresh
   local w = newWorld()
-  w.rested = true
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("rested line", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  w.native.shown = true -- Edit Mode reshows the cluster
+  w.tickers[1].fn()
+  check("refresh re-hides native", w.native.shown == false)
 end
-do
-  local w = newWorld()
-  w.warMode, w.rested = true, true
-  loadAddon(w)
-  clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses stack", readout(w, "0 XP/hr", "+10% War Mode\nRested", GREEN_C))
-end
-do
+do -- missing manager degrades to a lone bar, never an error
   local w = newWorld()
   loadAddon(w)
+  w.env.StatusTrackingBarManager = nil
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no bonus line", readout(w, "0 XP/hr", "No XP bonus", RED_C))
-end
-do -- Call to Arms raises the Enlisted value above the +10% base
-  local w = newWorld()
-  w.warMode, w.warBonus = true, 15
-  loadAddon(w)
-  clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode live value", readout(w, "0 XP/hr", "+15% War Mode", GREEN_C))
-end
-do
-  local w = newWorld()
-  w.warMode, w.warBonus = true, 30
-  loadAddon(w)
-  clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode high call", readout(w, "0 XP/hr", "+30% War Mode", GREEN_C))
-end
-do -- missing bonus API falls back to the +10% base
-  local w = newWorld()
-  w.warMode = true
-  loadAddon(w)
-  w.env.C_PvP = { IsWarModeDesired = function() return true end }
-  clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode fallback", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
-end
-do -- out-of-range value is not trusted
-  local w = newWorld()
-  w.warMode, w.warBonus = true, 5000
-  loadAddon(w)
-  clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("war mode range gate", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
-end
-
--- 8. The ticker refreshes the rate between XP events.
-do
-  local w = newWorld()
-  w.xp, w.max = 0, 100000
-  loadAddon(w)
-  clientLoaded(w)
-  check("ticker registered", #w.tickers == 1 and w.tickers[1].secs == 1)
-  w.now = w.now + 10
-  w.xp = 3600
+  w.xp = 500
   xpEvent(w)
-  check("early gain collects", w.frame.title.text == "1.3m XP/hr" and subline(w) == "Collecting data")
-  w.now = w.now + 290
-  w.tickers[1].fn()
-  check("ticker holds window", readout(w, "43k XP/hr · 2h14m", "No XP bonus", RED_C))
-  check("ticker sub", subline(w) == "Warming up · last 5m of 10m")
-  w.now = w.now + 11
-  w.tickers[1].fn()
-  check("ticker warming rate", readout(w, "42k XP/hr · 2h19m", "No XP bonus", RED_C))
-  check("ticker warming sub", subline(w) == "Warming up · last 5m of 10m")
-  w.now = w.now + 300
-  w.tickers[1].fn()
-  check("ticker expires award", readout(w, "0 XP/hr", "No XP bonus", RED_C))
-  check("expired sub", subline(w) == "No XP in the last 10m")
+  check("no manager still paints", close(w.bar.value, 0.5))
+end
+do -- partial manager (no methods) is left alone
+  local w = newWorld()
+  loadAddon(w)
+  w.env.StatusTrackingBarManager = {}
+  clientLoaded(w)
+  check("methodless manager ignored", w.frame.shown == true)
 end
 
--- 9. /vxp toggles the readout.
+-- 7. Quest scan: ready quests summed, everything else skipped,
+-- selection restored, re-entry safe.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  setQuests(w, {
+    { id = 10, header = true },
+    { id = 11, xp = 100, ready = true },
+    { id = 12, xp = 200, ready = false },
+    { id = 13, xp = 0, ready = true },
+  })
+  local total, count = ns.scanQuestXp()
+  check("scan sums ready xp", total == 100)
+  check("scan counts paid quests", count == 1)
+end
+do -- nil entries and unpaid quests never break the scan
+  local w = newWorld()
+  local ns = loadAddon(w)
+  setQuests(w, { { id = 11, ready = true } }) -- no xp entry: unpaid
+  w.quests[2] = nil -- hole reads as nil
+  local total, count = ns.scanQuestXp()
+  check("unpaid quest skipped", total == 0 and count == 0)
+end
+do -- the previous selection is restored
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.selectedQuest = 99
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  ns.scanQuestXp()
+  check("selection restored", w.selectedQuest == 99)
+  check("restore is last", w.selectLog[#w.selectLog] == 99)
+end
+do -- zero selection needs no restore
+  local w = newWorld()
+  local ns = loadAddon(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  ns.scanQuestXp()
+  check("no restore for zero", #w.selectLog == 1 and w.selectLog[1] == 11)
+end
+do -- a missing API anywhere in the chain means no overlay
+  local w = newWorld()
+  local ns = loadAddon(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  w.env.C_QuestLog = nil
+  check("no quest namespace degrades", ns.scanQuestXp() == 0)
+  loadAddon(newWorld()) -- reload for a clean namespace, then break one link
+  local w2 = newWorld()
+  local ns2 = loadAddon(w2)
+  setQuests(w2, { { id = 11, xp = 100, ready = true } })
+  w2.env.C_QuestLog.ReadyForTurnIn = nil
+  check("missing link degrades", ns2.scanQuestXp() == 0)
+  w2.env.GetQuestLogRewardXP = nil
+  check("missing reward reader degrades", ns2.scanQuestXp() == 0)
+end
+do -- a quest event mid-scan re-renders instead of recursing
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 200, ready = true } })
+  local fired = false
+  local realSet = w.env.C_QuestLog.SetSelectedQuest
+  w.env.C_QuestLog.SetSelectedQuest = function(id)
+    realSet(id)
+    if not fired then
+      fired = true
+      w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+    end
+  end
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  check("re-entrant scan completes", fired == true)
+  check("re-entrant scan totals", ns.scanQuestXp() == 300)
+end
+do -- every quest event rescans and repaints
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  for _, e in ipairs({ "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED",
+                       "QUEST_REMOVED", "QUEST_COMPLETE" }) do
+    check("quest event registered: " .. e, w.frame.events[e] == true)
+  end
+  setQuests(w, { { id = 11, xp = 1000, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_TURNED_IN")
+  check("turn-in rescans", w.questFill.shown == true)
+  setQuests(w, {})
+  w.frame.scripts.OnEvent(w.frame, "QUEST_REMOVED")
+  check("removal clears", w.questFill.shown == false)
+end
+
+-- 8. Tooltip: gold title, rate, status, bonuses, gaps, slash hint.
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("tooltip anchors above the bar", w.gametip.owner == w.frame
+    and w.gametip.anchor == "ANCHOR_TOP" and w.gametip.shown == true)
+  check("tooltip title is gold", w.gametip.title == "VocXP" and sameColor(w.gametip.titleColor, GOLD_C))
+  local lines = tiptexts(w)
+  check("tooltip rate first", lines[1] == "Collecting data" and lines[2] == "Collecting data")
+  check("tooltip teaches the slash", lines[#lines]:find("/vxp", 1, true) ~= nil)
+end
+do -- full stack orders every section
+  local w = newWorld()
+  w.warMode, w.restedXp = true, 500
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  hover(w)
+  check("tooltip order", table.concat(tiptexts(w), "|") == table.concat({
+    "0 XP/hr",
+    "Warming up · last 1m of 10m",
+    "Rested: 50% of level",
+    "1 quest ready: 10% of level",
+    "+10% War Mode",
+    "Rested",
+    "+10% WHEE! (Faire week)",
+    "+10% Wickerman (Hallow's End)",
+    "Warband Mentored (needs a max-level character)",
+    "/vxp shows or hides it. /vxp help lists the rest.",
+  }, "|"))
+  check("tooltip bonus green", sameColor(tipcolor(w, "+10% War Mode"), GREEN_C))
+end
+do -- bonus and gap colors
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("no-bonus red", sameColor(tipcolor(w, "No XP bonus"), RED_C))
+  check("gap muted", sameColor(tipcolor(w, "Rested (rest in town)"), MUTED_C))
+  local sub = w.gametip.lines[2]
+  check("sub muted", sub.text == "Collecting data"
+    and sameColor({ sub.r, sub.g, sub.b }, MUTED_C))
+end
+do -- leaving the bar hides the tooltip
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  w.frame.scripts.OnLeave(w.frame)
+  check("leave hides tooltip", w.gametip.shown == false)
+end
+do -- mid-drag hover stays silent, then works after the drop
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.frame.scripts.OnDragStart(w.frame)
+  w.frame.scripts.OnEnter(w.frame)
+  check("drag suppresses tooltip", w.gametip.shown ~= true)
+  w.frame.point = { "TOPLEFT", 50, -60 }
+  w.frame.scripts.OnDragStop(w.frame)
+  w.frame.scripts.OnEnter(w.frame)
+  check("drop restores tooltip", w.gametip.shown == true)
+end
+
+-- 9. Edit Mode cooperation: tempers the lock, persists nothing.
+do
+  local w = newWorld()
+  w.savedVars = { locked = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("edit callbacks registered",
+    type(w.editCallbacks["EditMode.Enter"]) == "function"
+    and type(w.editCallbacks["EditMode.Exit"]) == "function")
+  w.frame.scripts.OnDragStart(w.frame)
+  check("locked drag blocked", w.frame.moving ~= true)
+  w.editCallbacks["EditMode.Enter"]()
+  check("enter flags active", ns.editModeActive == true)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("edit session drags locked", w.frame.moving == true)
+  w.frame.point = { "TOPLEFT", 50, -60 }
+  w.frame.scripts.OnDragStop(w.frame)
+  check("edit drag persists", ns.db.point == "TOPLEFT" and ns.db.x == 50 and ns.db.y == -60)
+  w.editCallbacks["EditMode.Exit"]()
+  check("exit clears active", ns.editModeActive == false)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("exit restores lock", w.frame.moving ~= true)
+  check("lock itself untouched", ns.db.locked == true)
+end
+do -- no EventRegistry: dragging behaves exactly as it always has
+  local w = newWorld()
+  w.savedVars = { locked = true }
+  local ns = loadAddon(w)
+  w.env.EventRegistry = nil
+  clientLoaded(w)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("no-registry locked drag blocked", w.frame.moving ~= true)
+  ns.setEditModeActive(true) -- direct flag still tempers (belt and braces)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("flag tempers lock", w.frame.moving == true)
+end
+do -- the flag coerces to boolean and subscribing is idempotent
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.setEditModeActive(1)
+  check("truthy coerces", ns.editModeActive == true)
+  ns.setEditModeActive(nil)
+  check("nil coerces", ns.editModeActive == false)
+  local enter = w.editCallbacks["EditMode.Enter"]
+  ns.subscribeEditMode()
+  check("subscribe once", w.editCallbacks["EditMode.Enter"] == enter)
+end
+
+-- 10. Dragging persists the position.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("drag starts moving", w.frame.moving == true)
+  w.frame.point = { "TOPLEFT", 50, -60 } -- the client moved it
+  w.frame.scripts.OnDragStop(w.frame)
+  check("drag stops", w.frame.moving == false)
+  check("drag persists", ns.db.point == "TOPLEFT" and ns.db.x == 50 and ns.db.y == -60)
+end
+
+-- 11. /vxp toggles the bar; /vxp lock gates the drag, never the mouse.
 do
   local w = newWorld()
   loadAddon(w)
@@ -411,23 +743,50 @@ do
   check("slash shows", w.frame.shown == true)
   check("slash show announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: shown")
 end
-
--- 10. /vxp lock toggles mouse input.
 do
   local w = newWorld()
-  loadAddon(w)
+  local ns = loadAddon(w)
   clientLoaded(w)
   local slash = w.env.SlashCmdList.VOCXP
   slash("lock")
-  check("lock disables mouse", w.frame.mouse == false)
+  check("lock gates drag", ns.db.locked == true)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("locked drag blocked", w.frame.moving ~= true)
+  check("lock keeps mouse", w.frame.mouse == true)
   check("lock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: locked")
   slash("  LOCK  ")
-  check("lock toggles back", w.frame.mouse == true)
+  check("lock toggles back", ns.db.locked == false)
   check("unlock announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: unlocked, drag to move")
 end
 
--- 11. /vxp reset zeroes the session.
-do
+-- 12. Session rate flows into the tooltip; the bar tracks the level.
+do -- XP gain accumulates into the session rate
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 1800
+  w.xp = 500
+  xpEvent(w)
+  hover(w)
+  local lines = tiptexts(w)
+  check("rate line", lines[1] == "3k XP/hr · 15m")
+  check("rate sub", lines[2] == "Last 10m")
+  check("rate no-bonus", tiphas(w, "No XP bonus"))
+  check("bar tracks xp", close(w.bar.value, 0.5))
+end
+do -- level-up carries the remainder across the bar
+  local w = newWorld()
+  w.xp, w.max = 900, 1000
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.max, w.level = 100, 2000, 11
+  w.now = w.now + 3600
+  xpEvent(w)
+  hover(w)
+  check("level-up carries", tiptexts(w)[1] == "1k XP/hr · 2h23m")
+  check("bar shows new level", w.label.text == "11  100/2k (5%)")
+end
+do -- /vxp reset zeroes the session
   local w = newWorld()
   w.xp, w.max = 0, 100000
   loadAddon(w)
@@ -437,103 +796,248 @@ do
   xpEvent(w)
   w.now = w.now + 100
   w.env.SlashCmdList.VOCXP("reset")
-  check("reset collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
+  hover(w)
+  check("reset collects", tiptexts(w)[1] == "Collecting data")
   check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset")
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
-  check("reset clears history", readout(w, "60k XP/hr · 1h34m", "No XP bonus", RED_C))
-  check("reset warming sub", subline(w) == "Warming up · last 1m of 10m")
+  hover(w)
+  check("reset clears history", tiptexts(w)[1] == "60k XP/hr · 1h34m")
 end
-
--- 12. Dragging persists the position; locked drags don't move.
-do
+do -- /vxp pause freezes the display; resume restarts the gate
   local w = newWorld()
-  local ns = loadAddon(w)
-  clientLoaded(w)
-  w.frame.scripts.OnDragStart(w.frame)
-  check("drag starts moving", w.frame.moving == true)
-  w.frame.point = { "TOPLEFT", 50, -60 } -- the client moved it
-  w.frame.scripts.OnDragStop(w.frame)
-  check("drag stops", w.frame.moving == false)
-  check("drag persists", ns.db.point == "TOPLEFT" and ns.db.x == 50 and ns.db.y == -60)
-end
-do
-  local w = newWorld()
-  w.savedVars = { locked = true }
   loadAddon(w)
   clientLoaded(w)
-  w.frame.scripts.OnDragStart(w.frame)
-  check("locked drag blocked", w.frame.moving ~= true)
+  local slash = w.env.SlashCmdList.VOCXP
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  slash("pause")
+  hover(w)
+  check("pause display", tiptexts(w)[1] == "Paused" and tiptexts(w)[2] == "Tracking paused")
+  check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused")
+  w.now = w.now + 60
+  w.xp = 600
+  xpEvent(w)
+  hover(w)
+  check("pause ignores awards", tiptexts(w)[1] == "Paused")
+  slash("pause")
+  hover(w)
+  check("resume collects", tiptexts(w)[1] == "Collecting data")
+  check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed")
+  w.now = w.now + 60
+  w.xp = 900
+  xpEvent(w)
+  hover(w)
+  check("resume no backfill", tiptexts(w)[1] == "18k XP/hr · <1m")
 end
 
--- 13. XP-buff auras join the bonus line.
+-- 13. The ticker refreshes the rate between XP events.
+do
+  local w = newWorld()
+  w.xp, w.max = 0, 100000
+  loadAddon(w)
+  clientLoaded(w)
+  check("ticker registered", #w.tickers == 1 and w.tickers[1].secs == 1)
+  w.now = w.now + 10
+  w.xp = 3600
+  xpEvent(w)
+  hover(w)
+  check("early gain collects", tiptexts(w)[1] == "1.3m XP/hr" and tiptexts(w)[2] == "Collecting data")
+  w.now = w.now + 290
+  w.tickers[1].fn()
+  hover(w)
+  check("ticker holds window", tiptexts(w)[1] == "43k XP/hr · 2h14m")
+  check("ticker sub", tiptexts(w)[2] == "Warming up · last 5m of 10m")
+  w.now = w.now + 11
+  w.tickers[1].fn()
+  hover(w)
+  check("ticker warming rate", tiptexts(w)[1] == "42k XP/hr · 2h19m")
+  w.now = w.now + 300
+  w.tickers[1].fn()
+  hover(w)
+  check("ticker expires award", tiptexts(w)[1] == "0 XP/hr")
+  check("expired sub", tiptexts(w)[2] == "No XP in the last 10m")
+end
+
+-- 14. Slash toggles confirm with sounds: open/close for the bar,
+-- the checkbox pair for lock, pause, and reset (numeric fallback: the
+-- harness provides no SOUNDKIT table).
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local slash = w.env.SlashCmdList.VOCXP
+  slash("")
+  slash("")
+  slash("lock")
+  slash("lock")
+  slash("pause")
+  slash("pause")
+  slash("reset")
+  check("toggle sounds", table.concat(w.sounds, ",") == "851,850,856,857,856,857,856")
+  w.env.SOUNDKIT = { IG_MAINMENU_OPEN = 1850, IG_MAINMENU_CLOSE = 1851 }
+  w.sounds = {}
+  slash("")
+  slash("")
+  check("SOUNDKIT names win over the fallback", table.concat(w.sounds, ",") == "1851,1850")
+  w.env.PlaySound = nil
+  w.sounds = {}
+  slash("") -- no sound API: silent, never an error
+  check("no sound API is silent", #w.sounds == 0)
+end
+
+-- Tooltip line helpers: green bonus lines and muted gap lines, in order.
+local function greenlines(w)
+  local out = {}
+  for _, l in ipairs(w.gametip.lines) do
+    if sameColor({ l.r, l.g, l.b }, GREEN_C) then out[#out + 1] = l.text end
+  end
+  return table.concat(out, "\n")
+end
+
+local function missinglines(w)
+  -- Muted lines between the status line and the slash hint are the gaps.
+  local texts = tiptexts(w)
+  local out = {}
+  for i = 3, #texts - 1 do
+    local l = w.gametip.lines[i]
+    if sameColor({ l.r, l.g, l.b }, MUTED_C) then out[#out + 1] = l.text end
+  end
+  return table.concat(out, "\n")
+end
+
+local function auraTick(w)
+  w.now = w.now + 60
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  hover(w)
+end
+
+-- 15. Bonus lines: every active XP source, highest value first.
+do
+  local w = newWorld()
+  w.warMode = true
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("war mode line", tiptexts(w)[1] == "0 XP/hr" and greenlines(w) == "+10% War Mode")
+end
+do
+  local w = newWorld()
+  w.restedXp = 400
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("rested line", greenlines(w) == "Rested")
+end
+do
+  local w = newWorld()
+  w.warMode, w.restedXp = true, 400
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("bonuses stack", greenlines(w) == "+10% War Mode\nRested")
+end
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("no bonus line", tiphas(w, "No XP bonus") and greenlines(w) == "")
+end
+do -- Call to Arms raises the Enlisted value above the +10% base
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 15
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("war mode live value", greenlines(w) == "+15% War Mode")
+end
+do
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 30
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("war mode high call", greenlines(w) == "+30% War Mode")
+end
+do -- missing bonus API falls back to the +10% base
+  local w = newWorld()
+  w.warMode = true
+  loadAddon(w)
+  w.env.C_PvP = { IsWarModeDesired = function() return true end }
+  clientLoaded(w)
+  auraTick(w)
+  check("war mode fallback", greenlines(w) == "+10% War Mode")
+end
+do -- out-of-range value is not trusted
+  local w = newWorld()
+  w.warMode, w.warBonus = true, 5000
+  loadAddon(w)
+  clientLoaded(w)
+  auraTick(w)
+  check("war mode range gate", greenlines(w) == "+10% War Mode")
+end
 do
   local w = newWorld()
   w.auras[430191] = { points = { 20 } }
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored line", readout(w, "0 XP/hr", "+20% Warband Mentored", GREEN_C))
+  auraTick(w)
+  check("mentored line", greenlines(w) == "+20% Warband Mentored")
 end
 do
   local w = newWorld()
   w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("whee line", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
+  auraTick(w)
+  check("whee line", greenlines(w) == "+10% WHEE!")
 end
 do
   local w = newWorld()
   w.auras[136583] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("top hat line", readout(w, "0 XP/hr", "+10% Darkmoon Top Hat", GREEN_C))
+  auraTick(w)
+  check("top hat line", greenlines(w) == "+10% Darkmoon Top Hat")
 end
 do
   local w = newWorld()
   w.auras[24705] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("grim visage line", readout(w, "0 XP/hr", "+10% Grim Visage", GREEN_C))
+  auraTick(w)
+  check("grim visage line", greenlines(w) == "+10% Grim Visage")
 end
 do
   local w = newWorld()
   w.auras[95987] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("unburdened line", readout(w, "0 XP/hr", "+10% Unburdened", GREEN_C))
+  auraTick(w)
+  check("unburdened line", greenlines(w) == "+10% Unburdened")
 end
 do
   local w = newWorld()
-  w.warMode, w.rested = true, true
+  w.warMode, w.restedXp = true, 400
   w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses sort by value", readout(w, "0 XP/hr",
-    "+20% Warband Mentored\n+10% War Mode\n+10% WHEE!\nRested", GREEN_C))
+  auraTick(w)
+  check("bonuses sort by value", greenlines(w) ==
+    "+20% Warband Mentored\n+10% War Mode\n+10% WHEE!\nRested")
 end
 do -- highest bonus first across sources
   local w = newWorld()
-  w.warMode, w.warBonus, w.rested = true, 30, true
+  w.warMode, w.warBonus, w.restedXp = true, 30, 400
   w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("bonuses sort descending", readout(w, "0 XP/hr",
-    "+30% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested", GREEN_C))
+  auraTick(w)
+  check("bonuses sort descending", greenlines(w) ==
+    "+30% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested")
 end
 do -- lines without a number trail the valued lines
   local w = newWorld()
@@ -541,10 +1045,8 @@ do -- lines without a number trail the valued lines
   w.auras[430191] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("unvalued lines trail", readout(w, "0 XP/hr",
-    "+10% War Mode\nWarband Mentored", GREEN_C))
+  auraTick(w)
+  check("unvalued lines trail", greenlines(w) == "+10% War Mode\nWarband Mentored")
 end
 do -- missing aura API degrades to no aura lines, no error
   local w = newWorld()
@@ -552,108 +1054,116 @@ do -- missing aura API degrades to no aura lines, no error
   loadAddon(w)
   w.env.C_UnitAuras = nil
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no aura api degrades", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  auraTick(w)
+  check("no aura api degrades", tiphas(w, "No XP bonus"))
 end
-
 do -- mentored without a readable value shows no number
   local w = newWorld()
   w.auras[430191] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored fallback", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
+  auraTick(w)
+  check("mentored fallback", greenlines(w) == "Warband Mentored")
 end
 do -- out-of-range value is not trusted
   local w = newWorld()
   w.auras[430191] = { points = { 5000 } }
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("mentored range gate", readout(w, "0 XP/hr", "Warband Mentored", GREEN_C))
+  auraTick(w)
+  check("mentored range gate", greenlines(w) == "Warband Mentored")
 end
-
--- 14. Aura changes refresh the readout.
-do
+do -- aura changes refresh the tooltip
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
   check("unit_aura registered", w.frame.events.UNIT_AURA == true)
   w.now = w.now + 45
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("no aura yet", readout(w, "0 XP/hr", "No XP bonus", RED_C))
-  check("partial seconds sub", subline(w) == "Warming up · last 45s of 10m")
+  hover(w)
+  check("no aura yet", tiphas(w, "No XP bonus"))
+  check("partial seconds sub", tiptexts(w)[2] == "Warming up · last 45s of 10m")
   w.auras[46668] = {}
+  w.native.shown = true -- simulated Edit Mode reshow
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
-  check("other unit ignored", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  check("other unit ignored", w.native.shown == true)
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("player aura refreshes", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
+  check("player aura refreshes", w.native.shown == false)
+  hover(w)
+  check("player aura shows", greenlines(w) == "+10% WHEE!")
 end
 
--- 15. Tooltip frame styling and auto-fit.
-do
+-- 16. Missing-buff feedback: gray lines name what each gap is worth.
+do -- bare character sees every gap
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  check("backdrop template", w.frame.template == "BackdropTemplate")
-  check("tooltip background", w.frame.backdrop.bgFile == "Interface\\Tooltips\\UI-Tooltip-Background")
-  check("tooltip border", w.frame.backdrop.edgeFile == "Interface\\Tooltips\\UI-Tooltip-Border")
-  check("backdrop colors", w.frame.backdropColor[4] == 0.85 and w.frame.borderColor[1] == 1)
-  check("title uses tooltip header font", w.frame.title.template == "GameTooltipHeaderText")
-  check("body uses tooltip text font", w.frame.body.template == "GameTooltipText")
-  check("sub uses tooltip text font", w.frame.sub.template == "GameTooltipText")
-  local tc = w.frame.title.color or {}
-  check("title is house gold", tc[1] == 1 and tc[2] == 0.82 and tc[3] == 0)
-  check("missed uses tooltip text font", w.frame.missed.template == "GameTooltipText")
-  check("frame fits text", w.frame.size[1] == 120 and w.frame.size[2] == 152)
+  hover(w)
+  check("missing full list", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
+    .. "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)\n"
+    .. "Rested (rest in town)")
+end
+do -- partial stack shows only the gap
+  local w = newWorld()
+  w.warMode, w.restedXp = true, 400
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("missing gap only", missinglines(w) == "+10% WHEE! (Faire week)\n"
+    .. "+10% Wickerman (Hallow's End)\n"
+    .. "Warband Mentored (needs a max-level character)")
+end
+do -- full stack hides the section
+  local w = newWorld()
+  w.warMode, w.restedXp = true, 400
+  w.auras[430191] = { points = { 20 } }
+  w.auras[46668], w.auras[136583] = {}, {}
+  w.auras[24705], w.auras[95987] = {}, {}
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("missing hidden when full", missinglines(w) == "")
+end
+do -- offered War Mode value follows Call to Arms
+  local w = newWorld()
+  w.warBonus = 15
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("missing live offer", missinglines(w):find(
+    "+15% War Mode (toggle in a capital)", 1, true) ~= nil)
+end
+do -- one Wickerman aura covers the neutral line
+  local w = newWorld()
+  w.auras[24705] = {}
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("wickerman covered", not missinglines(w):find("Wickerman", 1, true))
 end
 
--- 16. Max level goes fully dormant: no ticker, no hot events.
+-- Darkmoon buffs are either/or: one active covers the other.
 do
   local w = newWorld()
-  w.xp, w.max = 0, 0
+  w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("maxed starts tickerless", #w.tickers == 0)
-  check("maxed unregisters xp", w.frame.events.PLAYER_XP_UPDATE == nil)
-  check("maxed unregisters aura", w.frame.events.UNIT_AURA == nil)
-  check("maxed unregisters level", w.frame.events.PLAYER_LEVEL_UP == nil)
-  check("maxed keeps pew wake", w.frame.events.PLAYER_ENTERING_WORLD == true)
+  hover(w)
+  local missed = missinglines(w)
+  check("whee covers top hat", not missed:find("Top Hat", 1, true))
+  check("whee not recommended", not missed:find("WHEE!", 1, true))
 end
-do -- ding to cap mid-session shuts down
+do
   local w = newWorld()
+  w.auras[136583] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.xp, w.max = 0, 0
-  xpEvent(w)
-  check("ding hides", w.frame.shown == false)
-  check("ding cancels ticker", w.tickers[1].cancelled == true)
-  check("ding unregisters xp", w.frame.events.PLAYER_XP_UPDATE == nil)
-  check("ding unregisters aura", w.frame.events.UNIT_AURA == nil)
-  check("ding unregisters level", w.frame.events.PLAYER_LEVEL_UP == nil)
-end
-do -- re-login after a ding restarts exactly one ticker
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  w.xp, w.max = 0, 0
-  xpEvent(w)
-  w.max = 50000
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("rewake restarts ticker", #w.tickers == 2 and w.tickers[2].cancelled ~= true)
-  check("rewake reregisters", w.frame.events.PLAYER_XP_UPDATE == true and w.frame.events.UNIT_AURA == true and w.frame.events.PLAYER_LEVEL_UP == true)
-  check("rewake reshows", w.frame.shown == true)
-  check("rewake collects", w.frame.title.text == "Collecting data")
-end
-do -- repeated logins never stack tickers
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("no double ticker", #w.tickers == 1)
+  hover(w)
+  local missed = missinglines(w)
+  check("top hat covers whee", not missed:find("WHEE!", 1, true))
+  check("top hat not recommended", not missed:find("Top Hat", 1, true))
 end
 
 -- 17. Rolling-rate core: fake clock, deterministic snapshots.
@@ -906,8 +1416,8 @@ do -- same-level gain becomes a timestamped award
   w.now = w.now + 60
   w.xp = 300
   xpEvent(w)
-  check("live rate", readout(w, "18k XP/hr · 3m", "No XP bonus", RED_C))
-  check("live sub", subline(w) == "Warming up · last 1m of 10m")
+  hover(w)
+  check("live rate", tiptexts(w)[1] == "18k XP/hr · 3m")
 end
 do -- level-up keeps history and snapshots the new level atomically
   local w = newWorld()
@@ -917,8 +1427,8 @@ do -- level-up keeps history and snapshots the new level atomically
   w.now = w.now + 120
   w.xp, w.max, w.level = 100, 2000, 11
   xpEvent(w)
-  check("ding rate", readout(w, "6k XP/hr · 19m", "No XP bonus", RED_C))
-  check("ding sub", subline(w) == "Warming up · last 2m of 10m")
+  hover(w)
+  check("ding rate", tiptexts(w)[1] == "6k XP/hr · 19m")
 end
 do -- PLAYER_LEVEL_UP refreshes but never adds an award
   local w = newWorld()
@@ -928,9 +1438,11 @@ do -- PLAYER_LEVEL_UP refreshes but never adds an award
   w.now = w.now + 60
   w.xp = 300
   xpEvent(w)
-  local title = w.frame.title.text
+  hover(w)
+  local line = tiptexts(w)[1]
   levelEvent(w)
-  check("level adds nothing", w.frame.title.text == title)
+  hover(w)
+  check("level adds nothing", tiptexts(w)[1] == line)
 end
 do -- multi-level jump is unmeasurable: no invented gain
   local w = newWorld()
@@ -939,8 +1451,8 @@ do -- multi-level jump is unmeasurable: no invented gain
   w.now = w.now + 60
   w.level, w.xp, w.max = 12, 50, 3000
   xpEvent(w)
-  check("jump silent", readout(w, "0 XP/hr", "No XP bonus", RED_C))
-  check("jump sub", subline(w) == "Warming up · last 1m of 10m")
+  hover(w)
+  check("jump silent", tiptexts(w)[1] == "0 XP/hr")
 end
 do -- negative same-level delta resyncs, never a negative award
   local w = newWorld()
@@ -950,12 +1462,13 @@ do -- negative same-level delta resyncs, never a negative award
   w.now = w.now + 60
   w.xp = 400
   xpEvent(w)
-  check("negative silent", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  hover(w)
+  check("negative silent", tiptexts(w)[1] == "0 XP/hr")
   w.now = w.now + 60
   w.xp = 500
   xpEvent(w)
-  check("resync rate", readout(w, "3k XP/hr · 10m", "No XP bonus", RED_C))
-  check("resync sub", subline(w) == "Warming up · last 2m of 10m")
+  hover(w)
+  check("resync rate", tiptexts(w)[1] == "3k XP/hr · 10m")
 end
 do -- zone load keeps history; character switch clears it
   local w = newWorld()
@@ -966,136 +1479,16 @@ do -- zone load keeps history; character switch clears it
   xpEvent(w)
   w.now = w.now + 30
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("zone keeps history", readout(w, "12k XP/hr · 4m", "No XP bonus", RED_C))
-  check("zone sub", subline(w) == "Warming up · last 1m of 10m")
+  hover(w)
+  check("zone keeps history", tiptexts(w)[1] == "12k XP/hr · 4m")
   w.guid = "Player-11-0002"
   w.now = w.now + 5
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("switch clears", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
-end
-do -- /vxp pause freezes the display; resume restarts the gate
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  local slash = w.env.SlashCmdList.VOCXP
-  w.now = w.now + 60
-  w.xp = 300
-  xpEvent(w)
-  slash("pause")
-  check("pause display", w.frame.title.text == "Paused" and subline(w) == "Tracking paused")
-  check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused")
-  w.now = w.now + 60
-  w.xp = 600
-  xpEvent(w)
-  check("pause ignores awards", w.frame.title.text == "Paused")
-  slash("pause")
-  check("resume collects", w.frame.title.text == "Collecting data" and subline(w) == "Collecting data")
-  check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed")
-  w.now = w.now + 60
-  w.xp = 900
-  xpEvent(w)
-  check("resume no backfill", readout(w, "18k XP/hr · <1m", "No XP bonus", RED_C))
-  check("resume fresh sub", subline(w) == "Warming up · last 1m of 10m")
+  hover(w)
+  check("switch clears", tiptexts(w)[1] == "Collecting data")
 end
 
--- 21. Slash toggles confirm with sounds: open/close for the readout,
--- the checkbox pair for lock, pause, and reset (numeric fallback: the
--- harness provides no SOUNDKIT table).
-do
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  local slash = w.env.SlashCmdList.VOCXP
-  slash("")
-  slash("")
-  slash("lock")
-  slash("lock")
-  slash("pause")
-  slash("pause")
-  slash("reset")
-  check("toggle sounds", table.concat(w.sounds, ",") == "851,850,856,857,856,857,856")
-  w.env.SOUNDKIT = { IG_MAINMENU_OPEN = 1850, IG_MAINMENU_CLOSE = 1851 }
-  w.sounds = {}
-  slash("")
-  slash("")
-  check("SOUNDKIT names win over the fallback", table.concat(w.sounds, ",") == "1851,1850")
-  w.env.PlaySound = nil
-  w.sounds = {}
-  slash("") -- no sound API: silent, never an error
-  check("no sound API is silent", #w.sounds == 0)
-end
-
--- 22. Missing-buff feedback: gray lines name what each gap is worth.
-do -- bare character sees every gap plus the rollup
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  check("missing full list", missedline(w) == "+10% War Mode (toggle in a capital)\n"
-    .. "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)\n"
-    .. "Rested (rest in town)")
-end
-do -- partial stack shows only the gap
-  local w = newWorld()
-  w.warMode, w.rested = true, true
-  loadAddon(w)
-  clientLoaded(w)
-  check("missing gap only", missedline(w) == "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)")
-end
-do -- full stack hides the section and its space
-  local w = newWorld()
-  w.warMode, w.rested = true, true
-  w.auras[430191] = { points = { 20 } }
-  w.auras[46668], w.auras[136583] = {}, {}
-  w.auras[24705], w.auras[95987] = {}, {}
-  loadAddon(w)
-  clientLoaded(w)
-  check("missing hidden when full", missedline(w) == "")
-  check("missing frees space", w.frame.size[1] == 120 and w.frame.size[2] == 118)
-end
-do -- offered War Mode value follows Call to Arms
-  local w = newWorld()
-  w.warBonus = 15
-  loadAddon(w)
-  clientLoaded(w)
-  check("missing live offer", missedline(w) == "+15% War Mode (toggle in a capital)\n"
-    .. "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)\n"
-    .. "Rested (rest in town)")
-end
-do -- one Wickerman aura covers the neutral line
-  local w = newWorld()
-  w.auras[24705] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  check("wickerman covered", not (missedline(w) or ""):find("Wickerman", 1, true))
-end
-
--- Darkmoon buffs are either/or: one active covers the other.
-do
-  local w = newWorld()
-  w.auras[46668] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  local missed = missedline(w) or ""
-  check("whee covers top hat", not missed:find("Top Hat", 1, true))
-  check("whee not recommended", not missed:find("WHEE!", 1, true))
-end
-do
-  local w = newWorld()
-  w.auras[136583] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  local missed = missedline(w) or ""
-  check("top hat covers whee", not missed:find("WHEE!", 1, true))
-  check("top hat not recommended", not missed:find("Top Hat", 1, true))
-end
-
--- 23. ETA uses a longer-memory basis than the displayed rate.
+-- 21. ETA uses a longer-memory basis than the displayed rate.
 do -- unit: 15-minute window keeps what the 10-minute window drops
   local w = newWorld()
   local ns = loadAddon(w)
@@ -1123,8 +1516,9 @@ do -- dungeon burst: live rate spikes, ETA stays conservative
   w.now = w.now + 300
   w.xp = 60000
   xpEvent(w)
-  check("burst rate spikes", readout(w, "360k XP/hr · 7m", "No XP bonus", RED_C))
-  check("burst sub", subline(w) == "Last 10m")
+  hover(w)
+  check("burst rate spikes", tiptexts(w)[1] == "360k XP/hr · 7m")
+  check("burst sub", tiptexts(w)[2] == "Last 10m")
 end
 do -- stale long-window earnings never resurrect an ETA
   local w = newWorld()
@@ -1136,35 +1530,38 @@ do -- stale long-window earnings never resurrect an ETA
   xpEvent(w)
   w.now = w.now + 910
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("stale eta stays null", subline(w) == "No XP in the last 10m")
-  check("stale title zero", w.frame.title.text == "0 XP/hr")
+  hover(w)
+  check("stale eta stays null", tiptexts(w)[2] == "No XP in the last 10m")
+  check("stale title zero", tiptexts(w)[1] == "0 XP/hr")
 end
 
--- 24. Aura reads go blind in instances: verifiable lines stay, the
+-- 22. Aura reads go blind in instances: verifiable lines stay, the
 -- rest becomes an honest note instead of false absence.
 do
   local w = newWorld()
   w.inInstance = true
-  w.warMode, w.rested = true, true
+  w.warMode, w.restedXp = true, 400
   w.auras[430191] = { points = { 20 } }
   w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  check("instance active lines", readout(w, "Collecting data", "+10% War Mode\nRested", GREEN_C))
-  check("instance missing note", missedline(w) == "Aura scan unavailable in instances")
+  hover(w)
+  check("instance active lines", greenlines(w) == "+10% War Mode\nRested")
+  check("instance missing note", missinglines(w) == "Aura scan unavailable in instances")
 end
 do
   local w = newWorld()
   w.inInstance = true
   loadAddon(w)
   clientLoaded(w)
-  check("instance bare body", readout(w, "Collecting data", "No XP bonus", RED_C))
-  check("instance bare missing", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+  hover(w)
+  check("instance bare body", tiphas(w, "No XP bonus"))
+  check("instance bare missing", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
     .. "Rested (rest in town)\n"
     .. "Aura scan unavailable in instances")
 end
 
--- 25. Idle status: a quiet minute in a full window admits staleness.
+-- 23. Idle status: a quiet minute in a full window admits staleness.
 do -- 59s of quiet stays ready; 60s trips idle
   local w = newWorld()
   w.max = 100000
@@ -1175,11 +1572,13 @@ do -- 59s of quiet stays ready; 60s trips idle
   xpEvent(w)
   w.now = w.now + 59
   w.tickers[1].fn()
-  check("quiet 59s ready", subline(w) == "Last 10m")
+  hover(w)
+  check("quiet 59s ready", tiptexts(w)[2] == "Last 10m")
   w.now = w.now + 1
   w.tickers[1].fn()
-  check("quiet 60s idle", subline(w) == "Idle 1m · last 10m")
-  check("idle keeps payoff", w.frame.title.text == "360k XP/hr · 7m")
+  hover(w)
+  check("quiet 60s idle", tiptexts(w)[2] == "Idle 1m · last 10m")
+  check("idle keeps payoff", tiptexts(w)[1] == "360k XP/hr · 7m")
 end
 do -- idle in a partial window still reads warming up
   local w = newWorld()
@@ -1191,11 +1590,67 @@ do -- idle in a partial window still reads warming up
   xpEvent(w)
   w.now = w.now + 120
   w.tickers[1].fn()
-  check("warming owns partial idle", subline(w) == "Warming up · last 3m of 10m")
-  check("partial idle payoff", w.frame.title.text == "100k XP/hr · 57m")
+  hover(w)
+  check("warming owns partial idle", tiptexts(w)[2] == "Warming up · last 3m of 10m")
+  check("partial idle payoff", tiptexts(w)[1] == "100k XP/hr · 57m")
 end
 
--- 26. Slash grammar (FAMILY.md): help lists every subcommand, an
+-- 24. Max level goes fully dormant: no ticker, no hot events,
+-- and the native bar comes back.
+local dormantEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "UNIT_AURA",
+  "PLAYER_EQUIPMENT_CHANGED", "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
+  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE" }
+do
+  local w = newWorld()
+  w.xp, w.max = 0, 0
+  loadAddon(w)
+  clientLoaded(w)
+  check("maxed starts tickerless", #w.tickers == 0)
+  for _, e in ipairs(dormantEvents) do
+    check("maxed unregisters " .. e, w.frame.events[e] == nil)
+  end
+  check("maxed keeps pew wake", w.frame.events.PLAYER_ENTERING_WORLD == true)
+end
+do -- ding to cap mid-session shuts down
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.max = 0, 0
+  xpEvent(w)
+  check("ding hides", w.frame.shown == false)
+  check("ding cancels ticker", w.tickers[1].cancelled == true)
+  check("ding unregisters xp", w.frame.events.PLAYER_XP_UPDATE == nil)
+  check("ding unregisters aura", w.frame.events.UNIT_AURA == nil)
+  check("ding unregisters quests", w.frame.events.QUEST_LOG_UPDATE == nil)
+  check("ding restores native", w.native.shown == true)
+end
+do -- re-login after a ding restarts exactly one ticker
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.max = 0, 0
+  xpEvent(w)
+  w.max = 50000
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("rewake restarts ticker", #w.tickers == 2 and w.tickers[2].cancelled ~= true)
+  check("rewake reregisters", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.UNIT_AURA == true and w.frame.events.PLAYER_LEVEL_UP == true
+    and w.frame.events.PLAYER_EQUIPMENT_CHANGED == true
+    and w.frame.events.UPDATE_EXHAUSTION == true
+    and w.frame.events.QUEST_LOG_UPDATE == true)
+  check("rewake reshows", w.frame.shown == true)
+  hover(w)
+  check("rewake collects", tiptexts(w)[1] == "Collecting data")
+end
+do -- repeated logins never stack tickers
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("no double ticker", #w.tickers == 1)
+end
+
+-- 25. Slash grammar (FAMILY.md): help lists every subcommand, an
 -- unknown subcommand prints help and never toggles, config opens the
 -- panel or says where it lives.
 do
@@ -1209,6 +1664,7 @@ do
   check("help names config and help last",
     ns.HELP[#ns.HELP - 1]:find("^/vxp config") ~= nil and ns.HELP[#ns.HELP]:find("^/vxp help") ~= nil
     and ns.HELP[#ns.HELP]:find("/vocxp works too", 1, true) ~= nil)
+  check("help leads with the bar", ns.HELP[1]:find("show or hide the bar", 1, true) ~= nil)
   before = #w.printed
   slash("lokc") -- typo: help, never an action
   check("unknown subcommand prints help", #w.printed == before + 1 + #ns.HELP)
@@ -1218,8 +1674,8 @@ do
     w.printed[#w.printed] == "|cff66ccffVocXP|r: open Settings > AddOns > VocXP")
 end
 
--- 27. Native Settings panel: both options, bound to the live table,
--- applied the moment they change.
+-- 26. Native Settings panel: every option, bound to the live table,
+-- applied the moment it changes.
 do
   local w = newWorld()
   w.withSettings = true
@@ -1230,23 +1686,31 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("shown and locked registered", keys.shown ~= nil and keys.locked ~= nil and #w.settingsReg == 2)
-  check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB)
-  check("two checkboxes", w.settingsChecks == 2)
-  check("defaults match", keys.shown.default == true and keys.locked.default == false)
+  check("three options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+    and keys.locked ~= nil and #w.settingsReg == 3)
+  check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
+    and keys.hideDefault.tbl == w.env.VocXPDB)
+  check("three checkboxes", w.settingsChecks == 3)
+  check("defaults match", keys.shown.default == true and keys.hideDefault.default == true
+    and keys.locked.default == false)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 2)
+  check("built once", #w.settingsReg == 3)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)
+  ns.db.shown = true
+  ns.db.hideDefault = false
+  w.settingCallbacks["VocXP_hideDefault"]()
+  check("hideDefault applies live", w.native.shown == true)
   ns.db.locked = true
   w.settingCallbacks["VocXP_locked"]()
-  check("locked applies live", w.frame.mouse == false)
+  w.frame.scripts.OnDragStart(w.frame)
+  check("locked applies live", w.frame.moving ~= true)
   w.env.SlashCmdList.VOCXP("config")
   check("/vxp config opens the category", w.openedCategory == 42)
 end
 
--- 28. Addon compartment: click does what the bare slash does; hover
+-- 27. Addon compartment: click does what the bare slash does; hover
 -- follows the tooltip contract (gold title, one line, the slash hint).
 do
   local w = newWorld()
@@ -1264,23 +1728,24 @@ do
   check("compartment tooltip anchors to the button", w.gametip.owner == btn and w.gametip.shown == true)
   check("compartment tooltip title is gold", w.gametip.title == "VocXP"
     and w.gametip.titleColor[1] == 1 and w.gametip.titleColor[2] == 0.82 and w.gametip.titleColor[3] == 0)
+  check("compartment tooltip names the bar", w.gametip.lines[1].text:find("XP bar", 1, true) ~= nil)
   check("compartment tooltip teaches the slash", #w.gametip.lines == 2
-    and w.gametip.lines[2]:find("/vxp", 1, true) ~= nil)
+    and w.gametip.lines[2].text:find("/vxp", 1, true) ~= nil)
   w.env.VocXP_CompartmentLeave("VocXP", btn)
   check("compartment leave hides the tooltip", w.gametip.shown == false)
 end
 
--- 29. Corrupt SavedVariables reset to defaults instead of misbehaving.
+-- 28. Corrupt SavedVariables reset to defaults instead of misbehaving.
 do
   local w = newWorld()
-  w.savedVars = { shown = "yes", locked = 1, point = 5, x = "far", y = 200 }
+  w.savedVars = { shown = "yes", locked = 1, hideDefault = "no", point = 5, x = "far", y = 200 }
   local ns = loadAddon(w)
   clientLoaded(w)
   check("wrong-typed keys reset", ns.db.shown == true and ns.db.locked == false
-    and ns.db.point == "CENTER" and ns.db.x == -340 and ns.db.y == 200)
+    and ns.db.hideDefault == true and ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 200)
 end
 
--- 30. Client flavor: Forever recommends only what exists there.
+-- 29. Client flavor: Forever recommends only what exists there.
 -- Detection reads our own loaded toc's Interface version (see
 -- ns.clientFlavor): 1.x is our Forever toc, 12.x our retail toc.
 do -- retail stays the default, querying our own addon entry
@@ -1295,16 +1760,18 @@ do -- Forever: Rested is the only recommendation
   w.addonInterfaceVersion = 16001
   local ns = loadAddon(w)
   clientLoaded(w)
-  check("forever missing rested only", missedline(w) == "Rested (rest in town)")
+  hover(w)
+  check("forever missing rested only", missinglines(w) == "Rested (rest in town)")
   check("forever flavor", ns.clientFlavor() == "forever")
 end
 do -- Forever plus Rested: nothing missing, the section hides
   local w = newWorld()
   w.addonInterfaceVersion = 16001
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
-  check("forever rested hides missing", missedline(w) == "")
+  hover(w)
+  check("forever rested hides missing", missinglines(w) == "")
 end
 do -- Forever: a lit War Mode flag still shows -- detection is ungated,
    -- only recommendations gate on flavor
@@ -1313,10 +1780,9 @@ do -- Forever: a lit War Mode flag still shows -- detection is ungated,
   w.warMode = true
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("forever war mode active", readout(w, "0 XP/hr", "+10% War Mode", GREEN_C))
-  check("forever war mode unrecommended", missedline(w) == "Rested (rest in town)")
+  auraTick(w)
+  check("forever war mode active", greenlines(w) == "+10% War Mode")
+  check("forever war mode unrecommended", missinglines(w) == "Rested (rest in town)")
 end
 do -- Forever: a present aura still shows
   local w = newWorld()
@@ -1324,10 +1790,9 @@ do -- Forever: a present aura still shows
   w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("forever whee active", readout(w, "0 XP/hr", "+10% WHEE!", GREEN_C))
-  check("forever whee unrecommended", not (missedline(w) or ""):find("WHEE!", 1, true))
+  auraTick(w)
+  check("forever whee active", greenlines(w) == "+10% WHEE!")
+  check("forever whee unrecommended", not missinglines(w):find("WHEE!", 1, true))
 end
 do -- Forever in an instance: no scan note, no aura recs to explain
   local w = newWorld()
@@ -1335,14 +1800,16 @@ do -- Forever in an instance: no scan note, no aura recs to explain
   w.inInstance = true
   loadAddon(w)
   clientLoaded(w)
-  check("forever instance quiet", missedline(w) == "Rested (rest in town)")
+  hover(w)
+  check("forever instance quiet", missinglines(w) == "Rested (rest in town)")
 end
 do -- missing version API falls back to retail, never errors
   local w = newWorld()
   loadAddon(w)
   w.env.C_AddOns = {}
   clientLoaded(w)
-  check("flavor fallback full list", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+  hover(w)
+  check("flavor fallback full list", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
     .. "+10% WHEE! (Faire week)\n"
     .. "+10% Wickerman (Hallow's End)\n"
     .. "Warband Mentored (needs a max-level character)\n"
@@ -1353,75 +1820,71 @@ do -- no C_AddOns at all: same retail fallback, silent
   loadAddon(w)
   w.env.C_AddOns = nil
   clientLoaded(w)
+  hover(w)
   check("flavor nil fallback", w.ns.clientFlavor() == "retail")
-  check("flavor nil full list", (missedline(w) or ""):find("War Mode", 1, true) ~= nil)
+  check("flavor nil full list", missinglines(w):find("War Mode", 1, true) ~= nil)
 end
 
--- 31. Regalia of Fabled Adventurers: heirloom count slows Rested use.
+-- 30. Regalia of Fabled Adventurers: heirloom count slows Rested use.
 -- The set cuts Rested consumption 30% at 2 pieces and another 30% at 6;
 -- the Rested line carries the live reduction, and the missing section
 -- teaches the next threshold.
 do -- Rested + 2 heirlooms annotates the Rested line
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot", "ChestSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  auraTick(w)
   check("regalia 2pc annotates rested",
-    readout(w, "0 XP/hr", "Rested · -30% use (Regalia 2pc)", GREEN_C))
+    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
   check("regalia 2pc missing teaches 6pc",
-    (missedline(w) or ""):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
+    missinglines(w):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
 end
 do -- 6 pieces: the full -60%, nothing left to teach
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  auraTick(w)
   check("regalia 6pc annotates rested",
-    readout(w, "0 XP/hr", "Rested · -60% use (Regalia 6pc)", GREEN_C))
-  check("regalia 6pc missing quiet", not (missedline(w) or ""):find("Regalia", 1, true))
+    greenlines(w) == "Rested · -60% use (Regalia 6pc)")
+  check("regalia 6pc missing quiet", not missinglines(w):find("Regalia", 1, true))
 end
 do -- one heirloom: plain Rested, the 2pc taught below
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia 1pc rested plain", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  auraTick(w)
+  check("regalia 1pc rested plain", greenlines(w) == "Rested")
   check("regalia 1pc missing teaches 2pc",
-    (missedline(w) or ""):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
+    missinglines(w):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
 end
 do -- unrested with the set banked: Rested stays the ask, Regalia the next step
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot", "ChestSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia unrested no green line", readout(w, "0 XP/hr", "No XP bonus", RED_C))
+  auraTick(w)
+  check("regalia unrested no green line", tiphas(w, "No XP bonus"))
   check("regalia unrested missing",
-    (missedline(w) or ""):find("Rested (rest in town)", 1, true) ~= nil
-    and (missedline(w) or ""):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
+    missinglines(w):find("Rested (rest in town)", 1, true) ~= nil
+    and missinglines(w):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
 end
 do -- non-heirloom gear never counts
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot")
   w.equipped[w.slotIDs.ChestSlot] = 4 -- epic, not an heirloom
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia ignores epics", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  auraTick(w)
+  check("regalia ignores epics", greenlines(w) == "Rested")
   check("regalia epics still 1pc",
-    (missedline(w) or ""):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
+    missinglines(w):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
 end
 do -- thresholds: 0-1 nothing, 2-5 the first cut, 6+ the full cut
   local w = newWorld()
@@ -1439,6 +1902,7 @@ do -- exactly the eight counting slots are scanned, never weapons or trinkets
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
+  hover(w)
   local seen = {}
   for _, slotName in ipairs(w.slotQueries) do seen[slotName] = true end
   local n = 0
@@ -1447,80 +1911,67 @@ do -- exactly the eight counting slots are scanned, never weapons or trinkets
     and seen.HeadSlot and seen.NeckSlot and seen.ShoulderSlot and seen.BackSlot
     and seen.ChestSlot and seen.LegsSlot and seen.Finger0Slot and seen.Finger1Slot)
 end
-do -- missing equipment API degrades to today's readout, never an error
+do -- missing equipment API degrades to a plain Rested line, never an error
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   wear(w, "HeadSlot", "ChestSlot")
   w.env.C_PaperDollInfo = nil
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia no slot api degrades", readout(w, "0 XP/hr", "Rested", GREEN_C))
-  check("regalia no slot api missing quiet", not (missedline(w) or ""):find("Regalia", 1, true))
+  auraTick(w)
+  check("regalia no slot api degrades", greenlines(w) == "Rested")
+  check("regalia no slot api missing quiet", not missinglines(w):find("Regalia", 1, true))
 end
 do
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   wear(w, "HeadSlot", "ChestSlot")
   w.env.GetInventoryItemQuality = nil
   clientLoaded(w)
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia no quality api degrades", readout(w, "0 XP/hr", "Rested", GREEN_C))
+  auraTick(w)
+  check("regalia no quality api degrades", greenlines(w) == "Rested")
 end
 do -- Forever: heirlooms predate the set, so the count means nothing there
   local w = newWorld()
   w.addonInterfaceVersion = 16001
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
-  check("regalia forever rested plain", readout(w, "0 XP/hr", "Rested", GREEN_C))
-  check("regalia forever missing quiet", missedline(w) == "")
+  auraTick(w)
+  check("regalia forever rested plain", greenlines(w) == "Rested")
+  check("regalia forever missing quiet", missinglines(w) == "")
 end
 do -- gear swaps re-render at once through PLAYER_EQUIPMENT_CHANGED
   local w = newWorld()
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   check("equipment event registered", w.frame.events.PLAYER_EQUIPMENT_CHANGED == true)
   wear(w, "HeadSlot")
   w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.HeadSlot, false)
-  check("one heirloom plain", readout(w, "Collecting data", "Rested", GREEN_C))
+  hover(w)
+  check("one heirloom plain", greenlines(w) == "Rested")
   wear(w, "HeadSlot", "ChestSlot")
   w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.ChestSlot, false)
+  hover(w)
   check("second heirloom annotates",
-    readout(w, "Collecting data", "Rested · -30% use (Regalia 2pc)", GREEN_C))
+    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
 end
 do -- instances keep the equipment-derived lines: the paper doll reads fine there
   local w = newWorld()
   w.inInstance = true
-  w.rested = true
+  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
   wear(w, "HeadSlot", "ChestSlot")
-  w.now = w.now + 60
-  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  auraTick(w)
   check("regalia instance active",
-    readout(w, "0 XP/hr", "Rested · -30% use (Regalia 2pc)", GREEN_C))
-  check("regalia instance missing", missedline(w) == "+10% War Mode (toggle in a capital)\n"
+    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
+  check("regalia instance missing", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
     .. "-60% Rested use (Regalia 6pc, 2/6 worn)\n"
     .. "Aura scan unavailable in instances")
-end
-do -- dormancy covers the equipment event too
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  w.xp, w.max = 0, 0
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_XP_UPDATE")
-  check("ding unregisters equipment", w.frame.events.PLAYER_EQUIPMENT_CHANGED == nil)
-  w.max = 50000
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("rewake reregisters equipment", w.frame.events.PLAYER_EQUIPMENT_CHANGED == true)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")

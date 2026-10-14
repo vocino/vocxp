@@ -1,6 +1,6 @@
 ## Interface: 120105
 ## Title: VocXP
-## Notes: Rolling XP/hr and time-to-level, plus active XP bonuses. (/vxp)
+## Notes: Elegant XP bar with XP/hr, rested, and quest XP. (/vxp)
 ## Author: vocino
 ## Version: @project-version@
 ## Category: Quests & Leveling
