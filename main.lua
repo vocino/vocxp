@@ -326,8 +326,8 @@ questFill:SetWidth(0)
 setAtlasOrHide(questFill, ns.PREDICT_ATLAS)
 questFill:Hide()
 
-local label = bar:CreateFontString(nil, "OVERLAY", "TextStatusBarText")
-label:SetPoint("CENTER", bar, "CENTER", 0, 0)
+local barText = bar:CreateFontString(nil, "OVERLAY", "TextStatusBarText")
+barText:SetPoint("CENTER", bar, "CENTER", 0, 0)
 
 -- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
@@ -720,7 +720,7 @@ local function refresh()
   local seg = ns.barSegments(baseline, restedAmount(), questXp)
   if seg then
     bar:SetValue(seg.progress)
-    label:SetText(ns.barLabel(baseline, seg))
+    barText:SetText(ns.barLabel(baseline, seg))
     local fill = nil
     if type(bar.GetStatusBarTexture) == "function" then fill = bar:GetStatusBarTexture() end
     if fill ~= nil then
