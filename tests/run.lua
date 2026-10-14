@@ -163,7 +163,7 @@ end
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            rested = false, warMode = false, warBonus = 10, inInstance = false, auras = {},
-           addonInterfaceVersion = 120100,
+           addonInterfaceVersion = 120105,
            slotIDs = { HeadSlot = 1, NeckSlot = 2, ShoulderSlot = 3, BackSlot = 15,
                        ChestSlot = 5, LegsSlot = 7, Finger0Slot = 11, Finger1Slot = 12 },
            equipped = {}, slotQueries = {},
