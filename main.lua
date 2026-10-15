@@ -45,7 +45,7 @@ local COLORS = ns.COLORS
 
 -- Defaults: the single source of truth (FAMILY.md "Settings"). A key
 -- holding the wrong type resets; unknown keys are left alone.
-local defaults = { shown = true, locked = false, hideDefault = true, point = "BOTTOM", x = 0, y = 100 }
+local defaults = { shown = true, locked = false, hideDefault = true, repMode = true, followLatest = false, point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local function opts()
   if type(ns.db) ~= "table" then ns.db = {} VocXPDB = ns.db end
@@ -234,11 +234,13 @@ end
 function ns.titleText(est)
   if est.status == "paused" then return "Paused" end
   if est.status == "capped" then return "Max level" end
+  if est.status == "untracked" then return "No reputation tracked" end
+  if est.status == "rep-capped" then return est.capLabel or "Rank complete" end
   if est.status == "unavailable" then return "Unavailable" end
   local rate = est.xpPerHour
   -- No pace exists yet on the very first paint (zero elapsed time).
   if rate == nil then return "Collecting data" end
-  local head = fmt(rate) .. " XP/hr"
+  local head = fmt(rate) .. (est.unit == "Rep" and " Rep/hr" or " XP/hr")
   if est.etaSeconds == nil then return head end
   return head .. " · " .. ns.formatEta(est.etaSeconds)
 end
@@ -251,11 +253,19 @@ function ns.subText(est)
   local s = est.status
   if s == "paused" then return "Tracking paused" end
   if s == "capped" then return "Max level" end
-  if s == "unavailable" then return "Waiting for XP data" end
-  if s == "awaiting-level-update" then return "Level complete; awaiting update" end
+  if s == "unavailable" then
+    return est.unit == "Rep" and "Waiting for rep data" or "Waiting for XP data"
+  end
+  if s == "untracked" then return "Watch a faction to track it" end
+  if s == "rep-capped" then return "Rank complete" end
+  if s == "awaiting-level-update" then
+    return est.unit == "Rep" and "Rank complete; awaiting update" or "Level complete; awaiting update"
+  end
   if s == "collecting" then return "Collecting data" end
   local span = ns.formatObserved(est.windowSeconds)
-  if s == "no-recent-xp" then return "No XP in the last " .. span end
+  if s == "no-recent-xp" then
+    return (est.unit == "Rep" and "No rep in the last " or "No XP in the last ") .. span
+  end
   if s == "warming-up" then
     return "Warming up · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
   end
@@ -296,6 +306,50 @@ ns.FLARE_XP_ATLAS = "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
 ns.FLARE_RESTED_ATLAS = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
 ns.LEVELUP_XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience-2x-Flipbook"
 ns.LEVELUP_RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook"
+-- Reputation fills, one row per reaction like the native watch bar
+-- (ReputationBarOverrides.lua): Hated and Hostile burn red, Unfriendly
+-- orange, Neutral yellow, everything warmer green; Renown and
+-- major-faction Paragon take the blue override instead.
+ns.REP_FILL = {
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Orange",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Yellow",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green",
+  "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green",
+}
+ns.REP_FILL_BLUE = "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue"
+ns.REP_FLARE = {
+  "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-ArtifactPower-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook",
+}
+ns.REP_FLARE_BLUE = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
+ns.REP_LEVELUP = {
+  "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-ArtifactPower-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook",
+  "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook",
+}
+ns.REP_LEVELUP_BLUE = "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook"
+-- Standing names, Hated to Exalted. English literals like every other
+-- line the addon prints; the client localizes, we don't (see the
+-- verification record for why no label global is read instead).
+ns.STANDING_NAMES = {
+  "Hated", "Hostile", "Unfriendly", "Neutral",
+  "Friendly", "Honored", "Revered", "Exalted",
+}
 
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent)
 frame:SetSize(ns.BAR_WIDTH, ns.FRAME_HEIGHT)
@@ -414,6 +468,7 @@ local etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
 local baseline = nil
 local identity = nil
 local paused = false
+local mode = "xp" -- "xp", "rep", or "dormant"; derived from the capped snapshot, never toggled
 
 local function resetTrackers()
   rateTracker = ns.newTracker(GetTime())
@@ -513,6 +568,18 @@ local xpBuffs = {
   { id = 95987, label = "+10% Unburdened", pct = 10 },
 }
 
+-- Rep buffs, all +10%: the Faire pair, the Wickerman pair, and the
+-- Pilgrim's Bounty Spirit of Sharing (rep-only). Top Hat, Wickerman,
+-- and Sharing confirmed in-client; WHEE! on prose plus the confirmed
+-- same-event analog (see the verification record).
+local repBuffs = {
+  { id = 46668, label = "+10% WHEE!", pct = 10 },
+  { id = 136583, label = "+10% Darkmoon Top Hat", pct = 10 },
+  { id = 24705, label = "+10% Grim Visage", pct = 10 },
+  { id = 95987, label = "+10% Unburdened", pct = 10 },
+  { id = 61849, label = "+10% Spirit of Sharing", pct = 10 },
+}
+
 local function playerAura(spellID)
   if type(C_UnitAuras) ~= "table" then return nil end
   if type(C_UnitAuras.GetPlayerAuraBySpellID) ~= "function" then return nil end
@@ -575,6 +642,19 @@ local function bonusParts()
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
+  if mode == "rep" then
+    local restricted = inInstance()
+    for _, buff in ipairs(repBuffs) do
+      if not restricted and hasAura(buff.id) then add(buff.pct, buff.label) end
+    end
+    local tracked = ns.repTracked()
+    local progress = tracked and ns.readRepProgress(tracked) or nil
+    if progress and progress.bonus then add(nil, "Bonus rep gain") end
+    sortByValue(parts)
+    local labels = {}
+    for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+    return labels
+  end
   local wm = warModePct()
   if wm then add(wm, ("+%d%% War Mode"):format(wm)) end
   local restricted = inInstance()
@@ -612,6 +692,28 @@ local function missingParts()
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
   local forever = ns.clientFlavor() == "forever"
+  if mode == "rep" then
+    local repForever = ns.clientFlavor() == "forever"
+    local repRestricted = inInstance()
+    -- Forever recommends nothing: the event buffs are unconfirmed
+    -- there, the same gate the XP list applies.
+    if not repForever and not repRestricted then
+      if not hasAura(46668) and not hasAura(136583) then
+        add(10, "+10% WHEE! (Faire week)")
+      end
+      if not hasAura(24705) and not hasAura(95987) then
+        add(10, "+10% Wickerman (Hallow's End)")
+      end
+      if not hasAura(61849) then
+        add(10, "+10% Spirit of Sharing (Pilgrim's Bounty)")
+      end
+    end
+    if repRestricted and not repForever then add(nil, "Aura scan unavailable in instances") end
+    sortByValue(parts)
+    local labels = {}
+    for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+    return labels
+  end
   if not forever and not warMode() then
     local pct = warModeOffered()
     add(pct, ("+%d%% War Mode (toggle in a capital)"):format(pct))
@@ -752,6 +854,377 @@ local function restedAmount()
   return v
 end
 
+-- Reputation mode ------------------------------------------------------
+-- At max level the bar pivots from XP to reputation. A faction of any
+-- kind -- standard standing, Renown, Paragon, friendship -- normalizes
+-- to one progress shape ({ id, name, kind, have, need, level,
+-- levelLabel, capLabel, capped, bonus }, Paragon adding raw and
+-- pending), following Blizzard's own ReputationStatusBarMixin math
+-- (see .reference/api-verification.md "Reputation mode"). The rolling
+-- estimator never learns the kinds: rep paints synthetic XP-shaped
+-- snapshots through it with est.unit set, and only the format layer
+-- speaks Rep.
+
+-- Tracked-faction state. The ID persists in SavedVariables so a
+-- reload restores it; the cache and baseline are session-only.
+local repCache = {}
+local repFactionID, repWatching, lastGainedID, repBaseline = nil, false, nil, nil
+
+-- The standing ceiling. Blizzard defines MAX_REPUTATION_REACTION in
+-- its own (possibly unloaded) ReputationFrame, so a missing global
+-- falls back to the eight reactions that have held since 2004.
+function ns.maxRepReaction()
+  if type(MAX_REPUTATION_REACTION) == "number" and MAX_REPUTATION_REACTION >= 1 then
+    return math.floor(MAX_REPUTATION_REACTION)
+  end
+  return 8
+end
+
+function ns.standingName(reaction)
+  if type(reaction) == "number" and ns.STANDING_NAMES[reaction] ~= nil then
+    return ns.STANDING_NAMES[reaction]
+  end
+  return ("Rank %s"):format(tostring(reaction))
+end
+
+-- A faction-list row is trackable when it names a real faction and
+-- carries reputation (headers with rep count; plain headers don't).
+function ns.validRepRow(fd)
+  if type(fd) ~= "table" then return false end
+  if type(fd.factionID) ~= "number" or fd.factionID == 0 then return false end
+  if fd.isHeader and not fd.isHeaderWithRep then return false end
+  return type(fd.name) == "string" and fd.name ~= ""
+end
+
+-- Standard standing: currentStanding between the reaction thresholds.
+function ns.repStandardProgress(fd, maxReaction)
+  if not ns.validRepRow(fd) then return nil end
+  maxReaction = maxReaction or ns.maxRepReaction()
+  local r, lo, hi, cur = fd.reaction, fd.currentReactionThreshold, fd.nextReactionThreshold, fd.currentStanding
+  if type(r) ~= "number" or r < 1 or r ~= math.floor(r) then return nil end
+  if type(lo) ~= "number" or type(hi) ~= "number" or type(cur) ~= "number" then return nil end
+  local label = ns.standingName(math.min(r, maxReaction))
+  if r >= maxReaction then
+    return { id = fd.factionID, name = fd.name, kind = "standing",
+      have = 1, need = 1, level = r, levelLabel = label,
+      capLabel = label, capped = true, bonus = fd.hasBonusRepGain == true }
+  end
+  if hi <= lo or cur < lo then return nil end
+  return { id = fd.factionID, name = fd.name, kind = "standing",
+    have = cur - lo, need = hi - lo, level = r,
+    levelLabel = label, capLabel = label, capped = false,
+    bonus = fd.hasBonusRepGain == true }
+end
+
+-- Renown: currentStanding is already in-level progress over the
+-- faction's level threshold (the native watch bar reads it raw).
+function ns.repRenownProgress(fd, major, hasMax)
+  if not ns.validRepRow(fd) then return nil end
+  if type(major) ~= "table" then return nil end
+  local level, threshold = major.renownLevel, major.renownLevelThreshold
+  if type(level) ~= "number" or type(threshold) ~= "number" or threshold <= 0 then return nil end
+  if type(fd.currentStanding) ~= "number" then return nil end
+  local label = ("Renown %d"):format(math.floor(level))
+  if hasMax then
+    return { id = fd.factionID, name = fd.name, kind = "renown",
+      have = 1, need = 1, level = level, levelLabel = label,
+      capLabel = label, capped = true, bonus = fd.hasBonusRepGain == true }
+  end
+  local have = math.max(0, math.min(threshold, fd.currentStanding))
+  return { id = fd.factionID, name = fd.name, kind = "renown",
+    have = have, need = threshold, level = level, levelLabel = label,
+    capLabel = label, capped = false, bonus = fd.hasBonusRepGain == true }
+end
+
+-- Paragon: the cycle position is the lifetime value modulo the
+-- threshold; a pending reward pins the bar full. Never capped.
+function ns.repParagonProgress(fd, currentValue, threshold, hasRewardPending)
+  if not ns.validRepRow(fd) then return nil end
+  if type(currentValue) ~= "number" or type(threshold) ~= "number" or threshold <= 0 then return nil end
+  local have = currentValue % threshold
+  if hasRewardPending then have = threshold end
+  return { id = fd.factionID, name = fd.name, kind = "paragon", raw = currentValue,
+    have = have, need = threshold, level = nil, levelLabel = "Paragon",
+    capLabel = "Paragon", capped = false, pending = hasRewardPending == true,
+    bonus = fd.hasBonusRepGain == true }
+end
+
+-- Friendship: standing between the rank thresholds; a nil next
+-- threshold is max rank and paints a full bar.
+function ns.repFriendshipProgress(fd, repInfo, rankInfo)
+  if not ns.validRepRow(fd) then return nil end
+  if type(repInfo) ~= "table" or type(rankInfo) ~= "table" then return nil end
+  local reaction = type(repInfo.reaction) == "string" and repInfo.reaction or "Friend"
+  local level = type(rankInfo.currentLevel) == "number" and rankInfo.currentLevel or nil
+  if repInfo.nextThreshold == nil then
+    return { id = fd.factionID, name = fd.name, kind = "friendship",
+      have = 1, need = 1, level = level, levelLabel = reaction,
+      capLabel = reaction, capped = true, bonus = fd.hasBonusRepGain == true }
+  end
+  local lo, hi, cur = repInfo.reactionThreshold, repInfo.nextThreshold, repInfo.standing
+  if type(lo) ~= "number" or type(hi) ~= "number" or type(cur) ~= "number" then return nil end
+  if hi <= lo or cur < lo then return nil end
+  return { id = fd.factionID, name = fd.name, kind = "friendship",
+    have = cur - lo, need = hi - lo, level = level, levelLabel = reaction,
+    capLabel = reaction, capped = false, bonus = fd.hasBonusRepGain == true }
+end
+
+-- Rep gain between two progress reads of one faction. Same-kind and
+-- same-level deltas are exact; a single rank-up carries the remainder
+-- across; anything else (kind swap, faction swap, multi-rank jump, a
+-- loss) resyncs with nil, exactly like ns.gain. Paragon has no ranks:
+-- the lifetime value's non-negative delta is the gain.
+function ns.repGain(old, new)
+  if type(old) ~= "table" or type(new) ~= "table" then return nil end
+  if old.id ~= new.id or old.kind ~= new.kind then return nil end
+  if new.capped then return nil end
+  if new.kind == "paragon" then
+    if type(old.raw) ~= "number" or type(new.raw) ~= "number" then return nil end
+    if new.raw >= old.raw then return new.raw - old.raw end
+    return nil
+  end
+  if type(old.level) ~= "number" or type(new.level) ~= "number" then return nil end
+  if type(old.have) ~= "number" or type(new.have) ~= "number" then return nil end
+  if type(old.need) ~= "number" or type(new.need) ~= "number" then return nil end
+  if new.level == old.level then
+    if new.have >= old.have then return new.have - old.have end
+    return nil
+  elseif new.level == old.level + 1 then
+    return math.max(0, old.need - old.have + new.have)
+  end
+  return nil
+end
+
+-- Bar label: the faction name with in-rank numbers, name alone at the
+-- cap like the native bar, guidance when nothing is tracked.
+function ns.repBarLabel(progress)
+  if progress == nil then return "No faction tracked" end
+  if progress.capped then return progress.name end
+  local pct = math.max(0, math.min(100, math.floor(progress.have / progress.need * 100 + 0.5)))
+  return ("%s  %s/%s (%d%%)"):format(progress.name, fmt(progress.have), fmt(progress.need), pct)
+end
+
+-- Stats line: rank context the bar label skips. Nil at the cap (the
+-- tooltip carries it) and for unknown kinds.
+function ns.repStatsLine(progress)
+  if progress == nil or progress.capped then return nil end
+  local pct = math.max(0, math.min(100, math.floor(progress.have / progress.need * 100 + 0.5)))
+  if progress.kind == "standing" then
+    return ("%s · %d%% to %s"):format(progress.levelLabel, pct, ns.standingName(progress.level + 1))
+  elseif progress.kind == "renown" then
+    return ("%s · %d%% to %d"):format(progress.levelLabel, pct, progress.level + 1)
+  elseif progress.kind == "paragon" then
+    return ("Paragon · %d%% to reward"):format(pct)
+  elseif progress.kind == "friendship" then
+    return ("%s · %d%% to next rank"):format(progress.levelLabel, pct)
+  end
+  return nil
+end
+
+-- Fill art for a tracked faction: the reaction row, blue for Renown
+-- and major-faction Paragon, forced green for friendships. A missing
+-- or wild reaction reads friendly rather than erroring.
+function ns.repAtlas(progress)
+  if progress.kind == "renown" or progress.blue then
+    return ns.REP_FILL_BLUE, ns.REP_FLARE_BLUE, ns.REP_LEVELUP_BLUE
+  end
+  local row = progress.kind == "friendship" and 5 or progress.level
+  if type(row) ~= "number" or row < 1 or row > 8 then row = 5 end
+  row = math.floor(row)
+  return ns.REP_FILL[row], ns.REP_FLARE[row], ns.REP_LEVELUP[row]
+end
+
+-- One texture swap for both modes: the animated template takes atlas
+-- names, the plain-bar fallback paints its fill texture instead.
+local function applyBarArt(fillAtlas, flareAtlas, levelupAtlas)
+  if type(bar.SetBarTexture) == "function" then
+    pcall(bar.SetBarTexture, bar, fillAtlas)
+  elseif type(bar.GetStatusBarTexture) == "function" then
+    local fill = bar:GetStatusBarTexture()
+    if fill ~= nil then pcall(function() fill:SetAtlas(fillAtlas, false) end) end
+  end
+  if type(bar.SetAnimationTextures) == "function" then
+    pcall(bar.SetAnimationTextures, bar, flareAtlas, levelupAtlas)
+  end
+end
+
+-- Presence-gated readers. Every C_* call below verified ok/ok (see
+-- the verification record); a missing namespace still degrades to
+-- nil, never an error.
+local function watchedFaction()
+  if type(C_Reputation) ~= "table" then return nil end
+  if type(C_Reputation.GetWatchedFactionData) ~= "function" then return nil end
+  local fd = C_Reputation.GetWatchedFactionData()
+  if not ns.validRepRow(fd) then return nil end
+  return fd
+end
+
+-- Full progress for one faction ID, dispatching paragon -> renown ->
+-- friendship -> standard like the native watch bar. An unreadable
+-- kind reads nil instead of falling through to a wrong one; a
+-- missing kind API does the same.
+function ns.readRepProgress(factionID)
+  if type(C_Reputation) ~= "table" or type(factionID) ~= "number" then return nil end
+  local R = C_Reputation
+  -- The watched struct is the live one native itself paints; ByID can
+  -- lag it (3000 vs 1803 seen live on a renown faction), so the
+  -- watched faction always reads through GetWatchedFactionData.
+  local fd = nil
+  local watched = watchedFaction()
+  if watched ~= nil and watched.factionID == factionID then
+    fd = watched
+  elseif type(R.GetFactionDataByID) == "function" then
+    fd = R.GetFactionDataByID(factionID)
+  end
+  if not ns.validRepRow(fd) then return nil end
+  if type(R.IsFactionParagonForCurrentPlayer) == "function"
+      and R.IsFactionParagonForCurrentPlayer(factionID) then
+    if type(R.GetFactionParagonInfo) ~= "function" then return nil end
+    local currentValue, threshold, _, hasRewardPending = R.GetFactionParagonInfo(factionID)
+    local paragon = ns.repParagonProgress(fd, currentValue, threshold, hasRewardPending)
+    if paragon and type(R.IsMajorFaction) == "function" and R.IsMajorFaction(factionID) then
+      paragon.blue = true
+    end
+    return paragon
+  end
+  if type(R.IsMajorFaction) == "function" and R.IsMajorFaction(factionID) then
+    if type(C_MajorFactions) ~= "table"
+        or type(C_MajorFactions.GetMajorFactionData) ~= "function"
+        or type(C_MajorFactions.HasMaximumRenown) ~= "function" then return nil end
+    return ns.repRenownProgress(fd, C_MajorFactions.GetMajorFactionData(factionID),
+      C_MajorFactions.HasMaximumRenown(factionID))
+  end
+  if type(C_GossipInfo) == "table"
+      and type(C_GossipInfo.GetFriendshipReputation) == "function"
+      and type(C_GossipInfo.GetFriendshipReputationRanks) == "function" then
+    local repInfo = C_GossipInfo.GetFriendshipReputation(factionID)
+    if type(repInfo) == "table" and type(repInfo.friendshipFactionID) == "number"
+        and repInfo.friendshipFactionID > 0 then
+      return ns.repFriendshipProgress(fd, repInfo,
+        C_GossipInfo.GetFriendshipReputationRanks(repInfo.friendshipFactionID))
+    end
+  end
+  return ns.repStandardProgress(fd)
+end
+
+-- Gain scan: re-read every visible faction row and diff standings
+-- against the cache, returning the ID with the largest increase (or
+-- nil). Paragon rows compare lifetime values and friendship rows
+-- their own standing, the way Blizzard's ReputationFrame does;
+-- Renown rows compare currentStanding like the native watch bar.
+-- Decreases only resync the cache: a loss never steals tracking.
+-- Collapsed headers hide their children from the index list, so a
+-- collapsed faction's gains never surface here; the watched and
+-- persisted paths use ByID and never depend on the scan.
+local function scanStanding(R, id, standing)
+  if type(R.IsFactionParagonForCurrentPlayer) == "function"
+      and type(R.GetFactionParagonInfo) == "function"
+      and R.IsFactionParagonForCurrentPlayer(id) then
+    local currentValue = R.GetFactionParagonInfo(id)
+    if type(currentValue) == "number" then return currentValue end
+    return nil
+  end
+  if type(C_GossipInfo) == "table"
+      and type(C_GossipInfo.GetFriendshipReputation) == "function" then
+    local repInfo = C_GossipInfo.GetFriendshipReputation(id)
+    if type(repInfo) == "table" and type(repInfo.friendshipFactionID) == "number"
+        and repInfo.friendshipFactionID > 0 and type(repInfo.standing) == "number" then
+      return repInfo.standing
+    end
+  end
+  return standing
+end
+
+function ns.scanRepGains()
+  if type(C_Reputation) ~= "table" then return nil end
+  local R = C_Reputation
+  if type(R.GetNumFactions) ~= "function" or type(R.GetFactionDataByIndex) ~= "function" then
+    return nil
+  end
+  local ok, gained = pcall(function()
+    local n = R.GetNumFactions()
+    if type(n) ~= "number" then return nil end
+    local bestID, bestGain = nil, 0
+    for i = 1, n do
+      local fd = R.GetFactionDataByIndex(i)
+      if ns.validRepRow(fd) then
+        local standing = scanStanding(R, fd.factionID, fd.currentStanding)
+        if type(standing) == "number" then
+          local prev = repCache[fd.factionID]
+          repCache[fd.factionID] = standing
+          if type(prev) == "number" and standing > prev and standing - prev > bestGain then
+            bestID, bestGain = fd.factionID, standing - prev
+          end
+        end
+      end
+    end
+    return bestID
+  end)
+  if ok then return gained end
+  return nil
+end
+
+-- Tracked-faction resolution, first readable candidate wins: watched,
+-- then the latest gainer, then the persisted ID from the last
+-- session, then nothing (the untracked state). followLatest flips the
+-- order to latest, persisted, watched: the bar always follows fresh
+-- gains and only borrows the watched faction until the first one.
+-- The choice persists, so a reload restores it; every candidate
+-- revalidates to readable progress on the way in, so tracking never
+-- sticks on a dead row.
+function ns.resolveRepFaction()
+  repWatching = false
+  local watched = watchedFaction()
+  local watchedID = watched ~= nil and watched.factionID or nil
+  local order
+  if opts().followLatest then
+    order = { lastGainedID, opts().repFaction, watchedID }
+  else
+    order = { watchedID, lastGainedID, opts().repFaction }
+  end
+  repFactionID = nil
+  for i = 1, 3 do -- fixed bound: the order has holes (ipairs would stop at the first nil)
+    local id = order[i]
+    if type(id) == "number" and ns.readRepProgress(id) then
+      repFactionID = id
+      repWatching = (id == watchedID)
+      break
+    end
+  end
+  opts().repFaction = repFactionID
+  return repFactionID
+end
+
+function ns.repTracked()
+  return repFactionID
+end
+
+function ns.repFollowingWatched()
+  return repWatching
+end
+
+-- Re-resolve after a scan or a tick, restarting observation only when
+-- the tracked faction actually moved. Watched changes carry no
+-- event, so refresh calls this every second; the reads are cheap.
+function ns.maybeSwitchRep()
+  local before = repFactionID
+  local rid = ns.resolveRepFaction()
+  if rid ~= before then
+    repBaseline = rid and ns.readRepProgress(rid) or nil
+    resetTrackers()
+    return true
+  end
+  return false
+end
+
+function ns.noteRepGain(factionID)
+  if type(factionID) == "number" then lastGainedID = factionID end
+end
+
+function ns.repBaselineRead()
+  return repBaseline
+end
+
 -- The native cluster hides wholesale while ours shows: Blizzard offers
 -- no per-bar switch, so watched reputation and honor hide with the XP
 -- bar and the setting tooltip says so. Re-applied every refresh
@@ -765,7 +1238,7 @@ local function applyNativeBar()
   if type(mgr.IsShown) ~= "function" or type(mgr.Hide) ~= "function"
       or type(mgr.Show) ~= "function" then return end
   local o = opts()
-  local wantHidden = o.hideDefault and o.shown and not (baseline and baseline.capped)
+  local wantHidden = o.hideDefault and o.shown and mode ~= "dormant"
   if wantHidden then
     if mgr:IsShown() then mgr:Hide() end
     nativeHiddenByUs = true
@@ -804,15 +1277,90 @@ local function draggable()
   return (not opts().locked) or ns.editModeActive
 end
 
+-- One rep estimate for the bar and the tooltip, so they never
+-- disagree. Untracked carries guidance; a capped faction carries its
+-- cap label; otherwise a synthetic snapshot flows through the same
+-- estimator and longer ETA basis as XP.
+local function repEstimate(progress)
+  if progress == nil then
+    return { status = "untracked", windowSeconds = rateTracker.window,
+      observedSeconds = 0, windowXp = 0, idleSeconds = nil,
+      xpPerHour = nil, remainingXp = nil, etaSeconds = nil, unit = "Rep" }
+  end
+  local now = GetTime()
+  local snap
+  if progress.capped then
+    snap = { level = 0, xp = 1, req = 1, capped = false }
+  else
+    snap = { level = progress.level or 0, xp = progress.have, req = progress.need, capped = false }
+  end
+  local est = ns.estimate(rateTracker, now, snap, paused)
+  est.unit = "Rep"
+  if progress.capped and not paused then
+    est.status = "rep-capped"
+    est.capLabel = progress.capLabel
+    est.etaSeconds = nil
+    return est
+  end
+  local longEta = ns.etaSeconds(etaTracker, now, est.remainingXp or 0)
+  if est.etaSeconds and (est.remainingXp or 0) > 0 then
+    est.etaSeconds = longEta or est.etaSeconds
+  end
+  return est
+end
+
+local function refreshRep(o)
+  ns.maybeSwitchRep()
+  local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
+  local est = repEstimate(progress)
+  if progress then
+    if type(bar.SetAnimatedValues) == "function" then
+      bar:SetAnimatedValues(progress.have, 0, progress.need, progress.level)
+    else
+      bar:SetMinMaxValues(0, progress.need)
+      bar:SetValue(progress.have)
+    end
+    barText:SetText(ns.repBarLabel(progress))
+    applyBarArt(ns.repAtlas(progress))
+  else
+    if type(bar.SetAnimatedValues) == "function" then
+      bar:SetAnimatedValues(0, 0, 1, nil)
+    else
+      bar:SetMinMaxValues(0, 1)
+      bar:SetValue(0)
+    end
+    barText:SetText(ns.repBarLabel(nil))
+    applyBarArt(ns.XP_ATLAS, ns.FLARE_XP_ATLAS, ns.LEVELUP_XP_ATLAS)
+  end
+  -- No overlays in rep mode: rested and quest XP don't exist here.
+  restFill:Hide()
+  questFill:Hide()
+  pip:Hide()
+  applyNativeBar()
+  rate:SetText(ns.titleText(est))
+  local stats = ns.repStatsLine(progress)
+  if stats then
+    sub:SetText(stats)
+    sub:Show()
+  else
+    sub:Hide()
+  end
+  frame:SetShown(o.shown)
+end
+
 local function refresh()
   local o = opts()
   local now = GetTime()
-  local est = ns.estimate(rateTracker, now, baseline, paused)
-  if est.status == "capped" then
+  if mode == "dormant" then
     frame:SetShown(false)
     applyNativeBar()
     return
   end
+  if mode == "rep" then
+    refreshRep(o)
+    return
+  end
+  local est = ns.estimate(rateTracker, now, baseline, paused)
   -- The ETA reads the longer basis (which also prunes it); the rate
   -- window still gates whether any ETA shows at all.
   local longEta = ns.etaSeconds(etaTracker, now, est.remainingXp or 0)
@@ -834,18 +1382,9 @@ local function refresh()
     end
     barText:SetText(ns.barLabel(baseline, seg))
     local isRested = seg.hasRested
-    local atlas = isRested and ns.RESTED_ATLAS or ns.XP_ATLAS
-    if type(bar.SetBarTexture) == "function" then
-      pcall(bar.SetBarTexture, bar, atlas)
-    elseif type(bar.GetStatusBarTexture) == "function" then
-      local fill = bar:GetStatusBarTexture()
-      if fill ~= nil then pcall(function() fill:SetAtlas(atlas, false) end) end
-    end
-    if type(bar.SetAnimationTextures) == "function" then
-      pcall(bar.SetAnimationTextures, bar,
-        isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
-        isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
-    end
+    applyBarArt(isRested and ns.RESTED_ATLAS or ns.XP_ATLAS,
+      isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
+      isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
     if isRested and restOk then
       restFill:SetWidth(seg.restedEnd * ns.TROUGH_WIDTH)
       -- Crop like the native bar (ExhaustionTickMixin), never stretch:
@@ -894,9 +1433,54 @@ end
 -- promise without touching an unverified global.
 local dragging = false
 
+function ns.showRepTip()
+  if dragging then return end
+  if type(GameTooltip) ~= "table" then return end
+  local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
+  local est = repEstimate(progress)
+  GameTooltip:SetOwner(frame, "ANCHOR_TOP")
+  GameTooltip:ClearLines()
+  GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+  GameTooltip:AddLine(ns.titleText(est), COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  if progress then
+    local stats = ns.repStatsLine(progress)
+    if stats then
+      GameTooltip:AddLine(progress.name .. ": " .. stats,
+        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    else
+      GameTooltip:AddLine(progress.name .. " — " .. progress.capLabel,
+        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    end
+    if progress.pending then
+      GameTooltip:AddLine("Paragon reward pending",
+        COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
+    end
+  end
+  local bonuses = bonusParts()
+  if #bonuses == 0 then
+    GameTooltip:AddLine("No rep bonus", COLORS.red[1], COLORS.red[2], COLORS.red[3], true)
+  else
+    for _, b in ipairs(bonuses) do
+      GameTooltip:AddLine(b, COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
+    end
+  end
+  for _, m in ipairs(missingParts()) do
+    GameTooltip:AddLine(m, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
+  if progress then
+    GameTooltip:AddLine(repWatching and "Following watched faction" or "Following latest gains",
+      COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
+  GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
+    COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  GameTooltip:Show()
+end
+
 function ns.showTip()
   if dragging then return end
   if type(GameTooltip) ~= "table" then return end
+  if mode == "rep" then ns.showRepTip() return end
   local est = ns.estimate(rateTracker, GetTime(), baseline, paused)
   -- The same longer ETA basis refresh() applies, so the tooltip and
   -- the bar never disagree about time-to-level.
@@ -939,32 +1523,151 @@ function ns.showTip()
   GameTooltip:Show()
 end
 
--- At max level the addon goes fully dormant: no ticker, no hot
--- events, and the native bar comes back. PLAYER_ENTERING_WORLD stays
--- registered as the wake path (loading screens only); a cap raise
--- restarts everything there.
+-- Modes ------------------------------------------------------------------
+-- Leveling characters track XP; max-level characters track reputation
+-- (or go dormant when repMode is off). Each mode owns its event set;
+-- entering-world, cap-change, and aura signals stay registered in
+-- every active mode. Entering a mode restarts observation: a rate
+-- never spans two different progressions.
 local ticker
-local function shutdown()
+local xpEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "PLAYER_EQUIPMENT_CHANGED",
+  "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
+  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE" }
+local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" }
+
+local function setEvents(list, on)
+  for _, e in ipairs(list) do
+    if on then frame:RegisterEvent(e) else frame:UnregisterEvent(e) end
+  end
+end
+
+local function enterXPMode()
+  mode = "xp"
+  repBaseline = nil
+  setEvents(repEvents, false)
+  setEvents(xpEvents, true)
+  frame:RegisterEvent("UNIT_AURA")
+  if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
+end
+
+local function enterRepMode()
+  mode = "rep"
+  setEvents(xpEvents, false)
+  setEvents(repEvents, true)
+  frame:RegisterEvent("UNIT_AURA")
+  if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
+  repCache = {}
+  ns.scanRepGains() -- seed the cache: arriving gains diff, nothing awards
+  local id = ns.resolveRepFaction()
+  repBaseline = id and ns.readRepProgress(id) or nil
+  resetTrackers()
+  paused = false
+  local o = opts()
+  if not o.repAnnounced then
+    o.repAnnounced = true
+    ns.say("tracking reputation at max level (/vxp config to turn it off)")
+  end
+end
+
+local function enterDormant()
+  mode = "dormant"
   frame:SetShown(false)
   paused = false
   if ticker then ticker:Cancel() ticker = nil end
-  frame:UnregisterEvent("PLAYER_XP_UPDATE")
-  frame:UnregisterEvent("PLAYER_LEVEL_UP")
+  setEvents(xpEvents, false)
+  setEvents(repEvents, false)
   frame:UnregisterEvent("UNIT_AURA")
-  frame:UnregisterEvent("PLAYER_EQUIPMENT_CHANGED")
-  frame:UnregisterEvent("UPDATE_EXHAUSTION")
-  frame:UnregisterEvent("PLAYER_UPDATE_RESTING")
-  frame:UnregisterEvent("QUEST_LOG_UPDATE")
-  frame:UnregisterEvent("QUEST_TURNED_IN")
-  frame:UnregisterEvent("QUEST_ACCEPTED")
-  frame:UnregisterEvent("QUEST_REMOVED")
-  frame:UnregisterEvent("QUEST_COMPLETE")
   applyNativeBar()
 end
 
+-- Enter the mode a snapshot calls for. Entering rep mode or waking
+-- from dormancy restarts observation; callers already reset when the
+-- character itself changed.
+local function activateMode(snap)
+  if snap.capped and opts().repMode then
+    if mode ~= "rep" then enterRepMode() end
+  elseif snap.capped then
+    enterDormant()
+  elseif mode ~= "xp" then
+    resetTrackers()
+    paused = false
+    enterXPMode()
+  else
+    enterXPMode()
+  end
+end
+
+-- Effective max level, mirroring GameRulesUtil.GetEffectiveMaxLevelForPlayer
+-- (Blizzard_SharedXML/GameRulesUtil.lua): timerunners compare against the
+-- latest expansion, everyone else against their own, capped by the
+-- per-player max. Missing pieces degrade toward GetMaxPlayerLevel,
+-- then toward nothing (nil = unknown).
+function ns.effectiveMaxLevel()
+  local latest, expansion, perPlayer
+  if type(GetMaxLevelForLatestExpansion) == "function" then
+    latest = GetMaxLevelForLatestExpansion()
+  end
+  if type(GetMaxLevelForPlayerExpansion) == "function" then
+    expansion = GetMaxLevelForPlayerExpansion()
+  end
+  if type(GetMaxPlayerLevel) == "function" then perPlayer = GetMaxPlayerLevel() end
+  if type(latest) ~= "number" or type(expansion) ~= "number" or type(perPlayer) ~= "number" then
+    if type(perPlayer) == "number" then return perPlayer end
+    return nil
+  end
+  local timerunning = type(PlayerIsTimerunning) == "function" and PlayerIsTimerunning()
+  local trial = type(IsTrialAccount) == "function" and IsTrialAccount()
+  local expansionMax = (timerunning and not trial) and latest or expansion
+  return math.min(expansionMax, perPlayer)
+end
+
+-- Capped test, mirroring GameRulesUtil.IsPlayerAtEffectiveMaxLevel:
+-- a level comparison, never UnitXPMax == 0. At cap the client now
+-- reports a phantom requirement (100M seen live on a 90) instead of
+-- zeroing, so max == 0 survives only as the last-resort fallback
+-- when no max-level API exists at all.
+function ns.isLevelCapped(level, max)
+  if type(level) ~= "number" then return false end
+  local cap = ns.effectiveMaxLevel()
+  if type(cap) == "number" then return level >= cap end
+  return max == 0
+end
+
 local function readSnapshot()
-  local max = UnitXPMax("player")
-  return { level = UnitLevel("player"), xp = UnitXP("player"), req = max, capped = (max == 0) }
+  local max, level = UnitXPMax("player"), UnitLevel("player")
+  if ns.isLevelCapped(level, max) then return { level = level, xp = 0, req = 1, capped = true } end
+  return { level = level, xp = UnitXP("player"), req = max, capped = false }
+end
+
+-- Rep gains arrive as faction updates: rescan for the latest gainer,
+-- re-resolve (following it when nothing is watched), then reconstruct
+-- at most one award for the tracked faction from its baseline delta,
+-- exactly like the XP path.
+local function onRep()
+  ns.noteRepGain(ns.scanRepGains())
+  if ns.maybeSwitchRep() then
+    refresh()
+    return
+  end
+  if repFactionID then
+    local snap = ns.readRepProgress(repFactionID)
+    if snap == nil then
+      -- Tracked faction went unreadable: resolve again (usually the
+      -- untracked state) instead of awarding against stale reads.
+      ns.maybeSwitchRep()
+    else
+      if not paused then
+        local award = ns.repGain(repBaseline, snap)
+        if award then
+          local stamp = GetTime()
+          ns.addAward(rateTracker, stamp, award)
+          ns.addAward(etaTracker, stamp, award)
+        end
+      end
+      repBaseline = snap
+    end
+  end
+  refresh()
 end
 
 -- The XP bar is the single authoritative award source: each update
@@ -975,7 +1678,7 @@ local function onXP()
   local snap = readSnapshot()
   if snap.capped then
     baseline = snap
-    shutdown()
+    activateMode(snap)
     return
   end
   if not paused then
@@ -1016,11 +1719,17 @@ function ns.ensureSettings()
     ns.onSettingChanged(s, onChange)
   end
   check("shown", "Show the bar",
-    "Show the XP bar with XP/hr, time to level, and your active XP bonuses. Max-level characters never see it.",
+    "Show the bar: XP with XP/hr and bonuses while leveling, reputation with Rep/hr at max level.",
     function() refresh() end)
   check("hideDefault", "Hide the default XP bar",
     "Hide Blizzard's status bar cluster while VocXP shows. Watched reputation and honor bars hide with it.",
     function() refresh() end)
+  check("repMode", "Track reputation at max level",
+    "At max level, follow the watched faction (or the latest gains) with Rep/hr and time to the next rank.",
+    function() activateMode(readSnapshot()) refresh() end)
+  check("followLatest", "Follow latest reputation gains",
+    "In reputation mode, always track the faction you most recently earned, even when another faction is watched.",
+    function() if mode == "rep" then ns.maybeSwitchRep() end refresh() end)
   check("locked", "Lock the position",
     "Keep the bar where it is. Unlocked, drag it anywhere; it remembers.",
     function() refresh() end)
@@ -1036,6 +1745,7 @@ end
 frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+frame:RegisterEvent("PLAYER_MAX_LEVEL_UPDATE")
 frame:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" then
     -- The client replaces the SavedVariables global with the loaded
@@ -1048,39 +1758,47 @@ frame:SetScript("OnEvent", function(_, event, arg1)
   elseif event == "PLAYER_LOGIN" then
     ns.ensureSettings() -- in case Settings wasn't up at ADDON_LOADED
     return
+  elseif event == "PLAYER_MAX_LEVEL_UPDATE" then
+    -- Cap raised (or lowered): re-derive the mode from a fresh
+    -- snapshot. A raise wakes everything; staying capped is a no-op.
+    baseline = readSnapshot()
+    activateMode(baseline)
+    refresh()
+    return
   elseif event == "PLAYER_ENTERING_WORLD" then
     ns.db = VocXPDB or ns.db -- client replaced the file-top table
     ns.ensureSettings()
-    local snap = readSnapshot()
-    local id = UnitGUID("player")
-    if id ~= identity or (baseline and baseline.capped) then
-      -- New character, first login, or waking from a dormant capped
-      -- session: fresh window and a fresh observation gate. Zone loads
-      -- on the same character keep history; travel is tracked time.
-      identity = id
-      resetTrackers()
-      paused = false
-    end
-    if snap.capped then baseline = snap shutdown() return end
-    baseline = snap -- zone loads carry no timestamped gains: resync, add nothing
-    ns.scanQuestXp()
     ns.subscribeEditMode()
     local o = opts()
     frame:ClearAllPoints()
     frame:SetPoint(o.point, UIParent, o.point, o.x, o.y)
-    frame:RegisterEvent("PLAYER_XP_UPDATE")
-    frame:RegisterEvent("PLAYER_LEVEL_UP")
-    frame:RegisterEvent("UNIT_AURA")
-    frame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-    frame:RegisterEvent("UPDATE_EXHAUSTION")
-    frame:RegisterEvent("PLAYER_UPDATE_RESTING")
-    frame:RegisterEvent("QUEST_LOG_UPDATE")
-    frame:RegisterEvent("QUEST_TURNED_IN")
-    frame:RegisterEvent("QUEST_ACCEPTED")
-    frame:RegisterEvent("QUEST_REMOVED")
-    frame:RegisterEvent("QUEST_COMPLETE")
-    if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
-    if o.hideDefault and o.shown and not o.barAnnounced then
+    local snap = readSnapshot()
+    local id = UnitGUID("player")
+    local switched = id ~= identity
+    if switched or mode == "dormant" then
+      -- New character, first login, or waking from dormancy: fresh
+      -- window and a fresh observation gate. Zone loads on the same
+      -- character keep history; travel is tracked time.
+      identity = id
+      resetTrackers()
+      paused = false
+    end
+    baseline = snap -- zone loads carry no timestamped gains: resync, add nothing
+    if snap.capped and o.repMode then
+      if mode == "rep" and not switched then
+        -- Zone load inside rep mode: silent resync, history kept.
+        ns.scanRepGains()
+        ns.maybeSwitchRep()
+        local rid = ns.repTracked()
+        repBaseline = rid and ns.readRepProgress(rid) or nil
+      else
+        enterRepMode()
+      end
+    else
+      activateMode(snap)
+    end
+    if mode == "xp" then ns.scanQuestXp() end
+    if mode ~= "dormant" and o.hideDefault and o.shown and not o.barAnnounced then
       o.barAnnounced = true
       ns.say("the default XP bar hides while VocXP shows (/vxp config to change it)")
     end
@@ -1089,6 +1807,8 @@ frame:SetScript("OnEvent", function(_, event, arg1)
       if arg1 ~= "player" then return end
     elseif event == "PLAYER_XP_UPDATE" then
       onXP()
+    elseif event == "UPDATE_FACTION" or event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
+      onRep()
     elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN"
         or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED"
         or event == "QUEST_COMPLETE" then
@@ -1129,7 +1849,7 @@ function ns.toggle()
   local o = opts()
   o.shown = not o.shown
   refresh()
-  if baseline and baseline.capped then
+  if mode == "dormant" then
     ns.say("max level (stays hidden)")
   else
     ns.play(o.shown and "open" or "close")
@@ -1158,7 +1878,7 @@ function VocXP_CompartmentEnter(_, button)
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
   GameTooltip:ClearLines()
   GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
-  GameTooltip:AddLine("Session XP/hr and active XP bonuses on an elegant XP bar.",
+  GameTooltip:AddLine("Session XP/hr and bonuses on an elegant XP bar; reputation at max level.",
     COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
     COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
@@ -1203,6 +1923,7 @@ SlashCmdList.VOCXP = function(msg)
       -- timestamped awards, so history cannot span it.
       resetTrackers()
       baseline = readSnapshot()
+      if mode == "rep" then repBaseline = repFactionID and ns.readRepProgress(repFactionID) or nil end
     end
     refresh()
     click(paused)
@@ -1212,6 +1933,7 @@ SlashCmdList.VOCXP = function(msg)
     baseline = readSnapshot()
     paused = false
     refresh()
+    if mode == "rep" then repBaseline = repFactionID and ns.readRepProgress(repFactionID) or nil end
     click(true)
     ns.say("session reset")
   elseif msg == "config" then

@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: VocXP
-## Notes: Elegant XP bar with XP/hr, rested, and quest XP. (/vxp) (Forever client)
+## Notes: Elegant XP bar with rates and bonuses; reputation at max level. (/vxp) (Forever client)
 ## Author: vocino
 ## Version: @project-version@
 ## Category: Quests & Leveling

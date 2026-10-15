@@ -86,6 +86,80 @@ local function loadAddon(world)
     return world.equipped[slot]
   end
   g.IsInInstance = function() return world.inInstance end
+  g.GetMaxLevelForLatestExpansion = function() return world.latestMaxLevel end
+  g.GetMaxLevelForPlayerExpansion = function() return world.expansionMaxLevel end
+  g.GetMaxPlayerLevel = function() return world.playerMaxLevel end
+  g.PlayerIsTimerunning = function() return world.timerunning end
+  g.IsTrialAccount = function() return world.trial end
+  g.MAX_REPUTATION_REACTION = 8
+  local function factionRow(f)
+    return { factionID = f.id, name = f.name, reaction = f.reaction,
+             currentReactionThreshold = f.lo, nextReactionThreshold = f.hi,
+             currentStanding = f.standing, isHeader = f.header == true,
+             isHeaderWithRep = f.headerRep == true,
+             isWatched = f.id == world.watchedID, hasBonusRepGain = f.bonus == true }
+  end
+  local function factionByID(id)
+    for _, f in ipairs(world.factions) do
+      if f.id == id then return factionRow(f) end
+    end
+    return nil
+  end
+  g.C_Reputation = {
+    GetNumFactions = function() return #world.factions end,
+    GetFactionDataByIndex = function(i)
+      local f = world.factions[i]
+      if f == nil then return nil end
+      return factionRow(f)
+    end,
+    GetFactionDataByID = function(id)
+      local fd = factionByID(id)
+      -- byIDStanding models the live finding that ByID can lag the
+      -- watched struct (3000 vs 1803 seen on a renown faction).
+      if fd ~= nil then
+        for _, f in ipairs(world.factions) do
+          if f.id == id and f.byIDStanding ~= nil then fd.currentStanding = f.byIDStanding end
+        end
+      end
+      return fd
+    end,
+    GetWatchedFactionData = function()
+      if world.watchedID == nil or world.watchedID == 0 then return nil end
+      return factionByID(world.watchedID)
+    end,
+    IsMajorFaction = function(id) return world.isMajor[id] == true end,
+    IsFactionParagonForCurrentPlayer = function(id) return world.paragon[id] ~= nil end,
+    GetFactionParagonInfo = function(id)
+      local p = world.paragon[id]
+      if p == nil then return nil end
+      return p.current, p.threshold, 0, p.pending == true
+    end,
+  }
+  g.C_MajorFactions = {
+    GetMajorFactionData = function(id)
+      local m = world.major[id]
+      if m == nil then return nil end
+      return { renownLevel = m.level, renownLevelThreshold = m.threshold }
+    end,
+    HasMaximumRenown = function(id)
+      local m = world.major[id]
+      return m ~= nil and m.hasMax == true
+    end,
+  }
+  g.C_GossipInfo = {
+    GetFriendshipReputation = function(id)
+      local f = world.friendship[id]
+      if f == nil then return nil end
+      return { friendshipFactionID = f.fid, standing = f.standing,
+               reaction = f.reaction, reactionThreshold = f.lo, nextThreshold = f.next }
+    end,
+    GetFriendshipReputationRanks = function(fid)
+      for _, f in pairs(world.friendship) do
+        if f.fid == fid then return { currentLevel = f.curLevel, maxLevel = f.maxLevel } end
+      end
+      return nil
+    end,
+  }
   g.PlaySound = function(id) world.sounds[#world.sounds + 1] = id end
   g.GameTooltip = {
     SetOwner = function(_, owner, anchor) world.gametip.owner, world.gametip.anchor = owner, anchor end,
@@ -246,6 +320,10 @@ end
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            restedXp = nil, xpDisabled = false, warMode = false, warBonus = 10,
+           factions = {}, watchedID = nil, isMajor = {}, paragon = {},
+           playerMaxLevel = 90, expansionMaxLevel = 90, latestMaxLevel = 90,
+           timerunning = false, trial = false,
+           major = {}, friendship = {},
            inInstance = false, auras = {},
            addonInterfaceVersion = 120105,
            quests = {}, ready = {}, questReward = {}, selectedQuest = 0, selectLog = {},
@@ -314,6 +392,27 @@ local function setQuests(w, list)
   end
 end
 
+local function setFactions(w, list)
+  -- list: { { id = n, name = s, reaction = n, lo = n, hi = n,
+  --            standing = n, header = bool, bonus = bool } }
+  w.factions = {}
+  for _, f in ipairs(list) do w.factions[#w.factions + 1] = f end
+end
+
+local function repEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "UPDATE_FACTION")
+end
+
+local function maxLevelEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_MAX_LEVEL_UPDATE")
+end
+
+local function capWorld(w)
+  -- At cap the client reports a phantom 100M requirement, never 0
+  -- (seen live on a level 90); cap detection is a level comparison.
+  w.level, w.xp, w.max = 90, 0, 100000000
+end
+
 -- 1. SavedVariables rebind, defaults, and the one-time notice.
 do
   local w = newWorld()
@@ -338,6 +437,8 @@ do -- fresh profile gets all defaults and hides the native bar
   check("fresh shown defaults true", ns.db.shown == true)
   check("fresh locked defaults false", ns.db.locked == false)
   check("fresh hideDefault defaults true", ns.db.hideDefault == true)
+  check("fresh repMode defaults true", ns.db.repMode == true)
+  check("fresh followLatest defaults false", ns.db.followLatest == false)
   check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
   check("fresh frame shown", w.frame.shown == true)
   check("fresh native hidden", w.native.shown == false)
@@ -650,36 +751,87 @@ do
   check("overlays clamp at full", over.restedEnd == 1 and over.questEnd == 1)
 end
 
--- 5. Max-level characters never show the bar; the native bar returns.
-do
+-- 5. Max level pivots to reputation; the native bar stays hidden.
+do -- watched faction takes the bar with its rank context
   local w = newWorld()
-  w.xp, w.max = 0, 0
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
   loadAddon(w)
   clientLoaded(w)
-  check("max level hidden", w.frame.shown == false)
-  check("max level restores native", w.native.shown == true)
-  check("max level skips the notice", #w.printed == 0)
+  check("rep mode shown", w.frame.shown == true)
+  check("rep mode hides native", w.native.shown == false)
+  check("rep mode announces twice", #w.printed == 2
+    and w.printed[1] == "|cff66ccffVocXP|r: tracking reputation at max level (/vxp config to turn it off)"
+    and w.printed[2] == "|cff66ccffVocXP|r: the default XP bar hides while VocXP shows (/vxp config to change it)")
+  check("rep mode keeps ticker", #w.tickers == 1)
+  check("rep events registered", w.frame.events.UPDATE_FACTION == true
+    and w.frame.events.MAJOR_FACTION_RENOWN_LEVEL_CHANGED == true)
+  check("xp events unregistered", w.frame.events.PLAYER_XP_UPDATE == nil
+    and w.frame.events.QUEST_LOG_UPDATE == nil and w.frame.events.UPDATE_EXHAUSTION == nil)
+  check("rep aura stays", w.frame.events.UNIT_AURA == true)
+  check("rep bar label", w.label.text == "Court  3k/9k (33%)")
+  check("rep fill green", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("rep flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook"
+    and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook")
+  check("rep overlays off", w.restFill.shown == false and w.questFill.shown == false
+    and w.pip.shown == false)
+  check("rep rate collects", w.rate.text == "Collecting data")
+  check("rep stats rank", w.sub.shown == true and w.sub.text == "Honored · 33% to Revered")
 end
-do -- cap raised later: next login wakes everything back up
+do -- nothing tracked: guidance instead of a blank bar
   local w = newWorld()
-  w.xp, w.max = 0, 0
+  capWorld(w)
   loadAddon(w)
   clientLoaded(w)
-  w.max = 100000
+  check("untracked shown", w.frame.shown == true)
+  check("untracked keeps native hidden", w.native.shown == false)
+  check("untracked label", w.label.text == "No faction tracked")
+  check("untracked bar empty", w.bar.value == 0)
+  check("untracked rate", w.rate.text == "No reputation tracked")
+  check("untracked hides stats", w.sub.shown == false)
+  hover(w)
+  check("untracked tooltip", tiptexts(w)[1] == "No reputation tracked"
+    and tiptexts(w)[2] == "Watch a faction to track it")
+end
+do -- cap raised later: next login wakes XP back up
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  w.level, w.max = 10, 100000
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   check("cap raise reshows", w.frame.shown == true)
   check("cap raise rehides native", w.native.shown == false)
-  check("cap raise restarts ticker", #w.tickers == 1)
+  check("cap raise keeps one ticker", #w.tickers == 1 and w.tickers[1].cancelled ~= true)
   check("cap raise repaints", w.label.text == "10  0/100k (0%)")
+  check("cap raise swaps events", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.UPDATE_FACTION == nil)
 end
-do -- toggle at max level keeps the pref but says so
+do -- toggle at max level works like any bar now
   local w = newWorld()
-  w.xp, w.max = 0, 0
+  capWorld(w)
   loadAddon(w)
   clientLoaded(w)
   w.env.SlashCmdList.VOCXP("")
-  check("max toggle stays hidden", w.frame.shown == false)
-  check("max toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden)")
+  check("rep toggle hides", w.frame.shown == false)
+  check("rep toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: hidden")
+end
+do -- repMode off: the old dormancy, native bar back
+  local w = newWorld()
+  capWorld(w)
+  w.savedVars = { repMode = false }
+  loadAddon(w)
+  clientLoaded(w)
+  check("dormant hidden", w.frame.shown == false)
+  check("dormant restores native", w.native.shown == true)
+  check("dormant skips notices", #w.printed == 0)
+  check("dormant tickerless", #w.tickers == 0)
+  w.env.SlashCmdList.VOCXP("")
+  check("dormant toggle stays hidden", w.frame.shown == false)
+  check("dormant toggle announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: max level (stays hidden)")
 end
 
 -- 6. Native-bar hiding is enforced every refresh and restored on exit.
@@ -1813,52 +1965,100 @@ do -- idle in a partial window still reads warming up
   check("partial idle payoff", tiptexts(w)[1] == "100k XP/hr · 57m")
 end
 
--- 24. Max level goes fully dormant: no ticker, no hot events,
--- and the native bar comes back.
+-- 24. Mode transitions: dinging pivots to rep, dormancy stays
+-- available, and tickers never stack.
 local dormantEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "UNIT_AURA",
   "PLAYER_EQUIPMENT_CHANGED", "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
-  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE" }
-do
+  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE",
+  "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" }
+do -- repMode off at cap: fully dormant, native bar back
   local w = newWorld()
-  w.xp, w.max = 0, 0
+  capWorld(w)
+  w.savedVars = { repMode = false }
   loadAddon(w)
   clientLoaded(w)
-  check("maxed starts tickerless", #w.tickers == 0)
+  check("dormant starts tickerless", #w.tickers == 0)
   for _, e in ipairs(dormantEvents) do
-    check("maxed unregisters " .. e, w.frame.events[e] == nil)
+    check("dormant unregisters " .. e, w.frame.events[e] == nil)
   end
-  check("maxed keeps pew wake", w.frame.events.PLAYER_ENTERING_WORLD == true)
+  check("dormant keeps pew wake", w.frame.events.PLAYER_ENTERING_WORLD == true)
+  check("dormant keeps cap wake", w.frame.events.PLAYER_MAX_LEVEL_UPDATE == true)
 end
-do -- ding to cap mid-session shuts down
+do -- ding to cap mid-session pivots to rep, ticker kept
   local w = newWorld()
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
   loadAddon(w)
   clientLoaded(w)
-  w.xp, w.max = 0, 0
+  capWorld(w)
   xpEvent(w)
-  check("ding hides", w.frame.shown == false)
-  check("ding cancels ticker", w.tickers[1].cancelled == true)
+  check("ding stays shown", w.frame.shown == true)
+  check("ding keeps ticker", w.tickers[1].cancelled ~= true)
   check("ding unregisters xp", w.frame.events.PLAYER_XP_UPDATE == nil)
-  check("ding unregisters aura", w.frame.events.UNIT_AURA == nil)
-  check("ding unregisters quests", w.frame.events.QUEST_LOG_UPDATE == nil)
-  check("ding restores native", w.native.shown == true)
+  check("ding registers rep", w.frame.events.UPDATE_FACTION == true)
+  check("ding keeps aura", w.frame.events.UNIT_AURA == true)
+  check("ding hides native", w.native.shown == false)
+  check("ding announces rep", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: tracking reputation at max level (/vxp config to turn it off)")
+  check("ding paints rep", w.label.text == "Court  3k/9k (33%)")
 end
-do -- re-login after a ding restarts exactly one ticker
+do -- ding with repMode off shuts down as before
+  local w = newWorld()
+  w.savedVars = { repMode = false }
+  loadAddon(w)
+  clientLoaded(w)
+  capWorld(w)
+  xpEvent(w)
+  check("off ding hides", w.frame.shown == false)
+  check("off ding cancels ticker", w.tickers[1].cancelled == true)
+  check("off ding unregisters xp", w.frame.events.PLAYER_XP_UPDATE == nil)
+  check("off ding unregisters rep", w.frame.events.UPDATE_FACTION == nil)
+  check("off ding restores native", w.native.shown == true)
+end
+do -- cap raise without relog wakes XP through the cap event
+  local w = newWorld()
+  capWorld(w)
+  loadAddon(w)
+  clientLoaded(w)
+  w.level, w.max = 10, 50000
+  maxLevelEvent(w)
+  check("cap event repaints", w.label.text == "10  0/50k (0%)")
+  check("cap event swaps events", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.UPDATE_FACTION == nil)
+  hover(w)
+  check("cap event collects", tiptexts(w)[1] == "Collecting data")
+end
+do -- re-login after a ding keeps the one ticker
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  w.xp, w.max = 0, 0
+  capWorld(w)
   xpEvent(w)
-  w.max = 50000
+  w.level, w.max = 10, 50000
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("rewake restarts ticker", #w.tickers == 2 and w.tickers[2].cancelled ~= true)
+  check("rewake keeps ticker", #w.tickers == 1 and w.tickers[1].cancelled ~= true)
   check("rewake reregisters", w.frame.events.PLAYER_XP_UPDATE == true
     and w.frame.events.UNIT_AURA == true and w.frame.events.PLAYER_LEVEL_UP == true
     and w.frame.events.PLAYER_EQUIPMENT_CHANGED == true
     and w.frame.events.UPDATE_EXHAUSTION == true
     and w.frame.events.QUEST_LOG_UPDATE == true)
+  check("rewake unregisters rep", w.frame.events.UPDATE_FACTION == nil)
   check("rewake reshows", w.frame.shown == true)
   hover(w)
   check("rewake collects", tiptexts(w)[1] == "Collecting data")
+end
+do -- repMode off: re-login after a ding restarts exactly one ticker
+  local w = newWorld()
+  w.savedVars = { repMode = false }
+  loadAddon(w)
+  clientLoaded(w)
+  capWorld(w)
+  xpEvent(w)
+  w.level, w.max = 10, 50000
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("off rewake restarts ticker", #w.tickers == 2 and w.tickers[1].cancelled == true
+    and w.tickers[2].cancelled ~= true)
+  check("off rewake reshows", w.frame.shown == true)
 end
 do -- repeated logins never stack tickers
   local w = newWorld()
@@ -1866,6 +2066,14 @@ do -- repeated logins never stack tickers
   clientLoaded(w)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   check("no double ticker", #w.tickers == 1)
+end
+do -- repeated rep logins never stack tickers either
+  local w = newWorld()
+  capWorld(w)
+  loadAddon(w)
+  clientLoaded(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("rep no double ticker", #w.tickers == 1)
 end
 
 -- 25. Slash grammar (FAMILY.md): help lists every subcommand, an
@@ -1904,15 +2112,15 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("three options registered", keys.shown ~= nil and keys.hideDefault ~= nil
-    and keys.locked ~= nil and #w.settingsReg == 3)
+  check("five options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+    and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and #w.settingsReg == 5)
   check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
     and keys.hideDefault.tbl == w.env.VocXPDB)
-  check("three checkboxes", w.settingsChecks == 3)
+  check("five checkboxes", w.settingsChecks == 5)
   check("defaults match", keys.shown.default == true and keys.hideDefault.default == true
-    and keys.locked.default == false)
+    and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 3)
+  check("built once", #w.settingsReg == 5)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)
@@ -1926,6 +2134,28 @@ do
   check("locked applies live", w.frame.moving ~= true)
   w.env.SlashCmdList.VOCXP("config")
   check("/vxp config opens the category", w.openedCategory == 42)
+end
+
+do -- repMode applies live: dormant and rep swap without reload
+  local w = newWorld()
+  w.withSettings = true
+  capWorld(w)
+  w.savedVars = { repMode = false }
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  w.env.VocXPDB = w.savedVars
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("dormant before toggle", w.frame.shown == false and #w.tickers == 0)
+  ns.db.repMode = true
+  w.settingCallbacks["VocXP_repMode"]()
+  check("repMode on wakes rep", w.frame.shown == true and #w.tickers == 1
+    and w.label.text == "Court  3k/9k (33%)")
+  ns.db.repMode = false
+  w.settingCallbacks["VocXP_repMode"]()
+  check("repMode off restores dormant", w.frame.shown == false and w.native.shown == true
+    and w.tickers[1].cancelled == true)
 end
 
 -- 27. Addon compartment: click does what the bare slash does; hover
@@ -1956,10 +2186,10 @@ end
 -- 28. Corrupt SavedVariables reset to defaults instead of misbehaving.
 do
   local w = newWorld()
-  w.savedVars = { shown = "yes", locked = 1, hideDefault = "no", point = 5, x = "far", y = 200 }
+  w.savedVars = { shown = "yes", locked = 1, hideDefault = "no", repMode = "yes", followLatest = "yes", point = 5, x = "far", y = 200 }
   local ns = loadAddon(w)
   clientLoaded(w)
-  check("wrong-typed keys reset", ns.db.shown == true and ns.db.locked == false
+  check("wrong-typed keys reset", ns.db.shown == true and ns.db.locked == false and ns.db.repMode == true and ns.db.followLatest == false
     and ns.db.hideDefault == true and ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 200)
 end
 
@@ -2190,6 +2420,722 @@ do -- instances keep the equipment-derived lines: the paper doll reads fine ther
   check("regalia instance missing", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
     .. "-60% Rested use (Regalia 6pc, 2/6 worn)\n"
     .. "Aura scan unavailable in instances")
+end
+
+-- 35. Rep math: progress per kind, gains, labels, art.
+do -- standard progress: in-rank numbers and labels
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local fd = { factionID = 101, name = "Court", reaction = 6,
+    currentReactionThreshold = 12000, nextReactionThreshold = 21000,
+    currentStanding = 15000, hasBonusRepGain = true }
+  local p = ns.repStandardProgress(fd)
+  check("standing progress", p.have == 3000 and p.need == 9000 and p.level == 6)
+  check("standing labels", p.levelLabel == "Honored" and p.kind == "standing" and p.capped == false)
+  check("standing bonus", p.bonus == true)
+end
+do -- standard cap: Exalted reads full with the cap label
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local p = ns.repStandardProgress({ factionID = 101, name = "Court", reaction = 8,
+    currentReactionThreshold = 42000, nextReactionThreshold = 43000, currentStanding = 42999 })
+  check("exalted capped", p.capped == true and p.capLabel == "Exalted" and p.have == 1 and p.need == 1)
+end
+do -- standard rejects bad rows and bad thresholds
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("standing nil row", ns.repStandardProgress(nil) == nil)
+  check("standing header rejected", ns.repStandardProgress(
+    { factionID = 1, name = "H", isHeader = true }) == nil)
+  check("standing header with rep kept", ns.repStandardProgress(
+    { factionID = 1, name = "H", isHeader = true, isHeaderWithRep = true,
+      reaction = 5, currentReactionThreshold = 0, nextReactionThreshold = 3000,
+      currentStanding = 100 }) ~= nil)
+  check("standing zero id rejected", ns.repStandardProgress({ factionID = 0, name = "X" }) == nil)
+  check("standing flat thresholds rejected", ns.repStandardProgress(
+    { factionID = 101, name = "C", reaction = 5,
+      currentReactionThreshold = 3000, nextReactionThreshold = 3000, currentStanding = 3000 }) == nil)
+end
+do -- renown progress reads the in-level standing raw
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local fd = { factionID = 301, name = "Amani", reaction = 5,
+    currentReactionThreshold = 0, nextReactionThreshold = 2500, currentStanding = 1200 }
+  local p = ns.repRenownProgress(fd, { renownLevel = 7, renownLevelThreshold = 3000 }, false)
+  check("renown progress", p.have == 1200 and p.need == 3000 and p.level == 7)
+  check("renown label", p.levelLabel == "Renown 7" and p.kind == "renown")
+  check("renown clamps overflow", ns.repRenownProgress(
+    { factionID = 301, name = "A", currentStanding = 99999 },
+    { renownLevel = 7, renownLevelThreshold = 3000 }, false).have == 3000)
+  local maxed = ns.repRenownProgress(fd, { renownLevel = 25, renownLevelThreshold = 3000 }, true)
+  check("renown maxed", maxed.capped == true and maxed.capLabel == "Renown 25")
+  check("renown bad major", ns.repRenownProgress(fd, nil, false) == nil
+    and ns.repRenownProgress(fd, { renownLevel = 7 }, false) == nil)
+end
+do -- paragon cycles modulo the threshold, pending pins full
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local fd = { factionID = 401, name = "Para", reaction = 8,
+    currentReactionThreshold = 42000, nextReactionThreshold = 43000, currentStanding = 42999 }
+  local p = ns.repParagonProgress(fd, 12300, 10000, false)
+  check("paragon cycle", p.have == 2300 and p.need == 10000 and p.raw == 12300)
+  check("paragon never capped", p.capped == false and p.pending == false)
+  local pend = ns.repParagonProgress(fd, 12300, 10000, true)
+  check("paragon pending full", pend.have == 10000 and pend.pending == true)
+  check("paragon bad values", ns.repParagonProgress(fd, nil, 10000, false) == nil
+    and ns.repParagonProgress(fd, 100, 0, false) == nil)
+end
+do -- friendship ranks, max rank full
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local fd = { factionID = 501, name = "Valeera", reaction = 5,
+    currentReactionThreshold = 0, nextReactionThreshold = 0, currentStanding = 0 }
+  local p = ns.repFriendshipProgress(fd,
+    { friendshipFactionID = 9001, standing = 2500, reaction = "Good Friend",
+      reactionThreshold = 2000, nextThreshold = 4000 },
+    { currentLevel = 3, maxLevel = 6 })
+  check("friendship progress", p.have == 500 and p.need == 2000 and p.level == 3)
+  check("friendship label", p.levelLabel == "Good Friend" and p.kind == "friendship")
+  local maxed = ns.repFriendshipProgress(fd,
+    { friendshipFactionID = 9001, standing = 8000, reaction = "Best Friend",
+      reactionThreshold = 6000, nextThreshold = nil },
+    { currentLevel = 6, maxLevel = 6 })
+  check("friendship maxed", maxed.capped == true and maxed.capLabel == "Best Friend")
+end
+do -- rep gains mirror the XP rules per faction
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local base = { id = 101, kind = "standing", have = 100, need = 1000, level = 6, capped = false }
+  check("repGain nil baseline", ns.repGain(nil, base) == nil)
+  check("repGain same rank", ns.repGain(base,
+    { id = 101, kind = "standing", have = 300, need = 1000, level = 6, capped = false }) == 200)
+  check("repGain loss resyncs", ns.repGain(base,
+    { id = 101, kind = "standing", have = 50, need = 1000, level = 6, capped = false }) == nil)
+  check("repGain rank-up carries", ns.repGain(
+    { id = 101, kind = "standing", have = 900, need = 1000, level = 6, capped = false },
+    { id = 101, kind = "standing", have = 100, need = 3000, level = 7, capped = false }) == 200)
+  check("repGain multi-rank nil", ns.repGain(base,
+    { id = 101, kind = "standing", have = 100, need = 3000, level = 8, capped = false }) == nil)
+  check("repGain faction swap nil", ns.repGain(base,
+    { id = 202, kind = "standing", have = 300, need = 1000, level = 6, capped = false }) == nil)
+  check("repGain into cap nil", ns.repGain(base,
+    { id = 101, kind = "standing", have = 1, need = 1, level = 8, capped = true }) == nil)
+  check("repGain paragon delta", ns.repGain(
+    { id = 401, kind = "paragon", raw = 100, capped = false },
+    { id = 401, kind = "paragon", raw = 250, capped = false }) == 150)
+  check("repGain paragon loss nil", ns.repGain(
+    { id = 401, kind = "paragon", raw = 250, capped = false },
+    { id = 401, kind = "paragon", raw = 100, capped = false }) == nil)
+end
+do -- bar labels and stats lines per kind
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("rep label untracked", ns.repBarLabel(nil) == "No faction tracked")
+  check("rep label capped", ns.repBarLabel({ name = "Court", capped = true }) == "Court")
+  check("rep label progress", ns.repBarLabel(
+    { name = "Court", capped = false, have = 3000, need = 9000 }) == "Court  3k/9k (33%)")
+  check("rep stats standing", ns.repStatsLine(
+    { kind = "standing", capped = false, have = 3000, need = 9000, level = 6,
+      levelLabel = "Honored" }) == "Honored · 33% to Revered")
+  check("rep stats renown", ns.repStatsLine(
+    { kind = "renown", capped = false, have = 1200, need = 3000, level = 7,
+      levelLabel = "Renown 7" }) == "Renown 7 · 40% to 8")
+  check("rep stats paragon", ns.repStatsLine(
+    { kind = "paragon", capped = false, have = 2300, need = 10000 }) == "Paragon · 23% to reward")
+  check("rep stats friendship", ns.repStatsLine(
+    { kind = "friendship", capped = false, have = 500, need = 2000,
+      levelLabel = "Good Friend" }) == "Good Friend · 25% to next rank")
+  check("rep stats capped hides", ns.repStatsLine({ kind = "standing", capped = true }) == nil)
+  check("rep stats unknown hides", ns.repStatsLine(
+    { kind = "mystery", capped = false, have = 1, need = 2 }) == nil)
+end
+do -- fill art follows the native rows
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local function fill(p) local a = ns.repAtlas(p) return a end
+  check("rep atlas hated red", fill({ kind = "standing", level = 1 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red")
+  check("rep atlas hostile red", fill({ kind = "standing", level = 2 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red")
+  check("rep atlas unfriendly orange", fill({ kind = "standing", level = 3 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Orange")
+  check("rep atlas neutral yellow", fill({ kind = "standing", level = 4 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Yellow")
+  check("rep atlas honored green", fill({ kind = "standing", level = 6 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("rep atlas renown blue", fill({ kind = "renown", level = 7 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue")
+  check("rep atlas major paragon blue", fill({ kind = "paragon", blue = true }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue")
+  check("rep atlas plain paragon green", fill({ kind = "paragon" }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("rep atlas friendship green", fill({ kind = "friendship", level = 3 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("rep atlas wild reads friendly", fill({ kind = "standing", level = 99 }) ==
+    "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  local _, flare, levelup = ns.repAtlas({ kind = "standing", level = 6 })
+  check("rep atlas flare pair", flare == "UI-HUD-ExperienceBar-Flare-Reputation-2x-Flipbook"
+    and levelup == "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook")
+end
+do -- standing names and the reaction ceiling
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("standing names", ns.standingName(1) == "Hated" and ns.standingName(8) == "Exalted")
+  check("standing wild", ns.standingName(99) == "Rank 99")
+  check("max reaction reads global", ns.maxRepReaction() == 8)
+  w.env.MAX_REPUTATION_REACTION = nil
+  check("max reaction falls back", ns.maxRepReaction() == 8)
+end
+
+-- 36. Tracked-faction resolution: watched wins, then the latest
+-- gainer, then the persisted ID, then the untracked state.
+do -- watched wins over gains elsewhere
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("watched tracked", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+  w.factions[2].standing = 9000 -- gains elsewhere don't steal a watched bar
+  repEvent(w)
+  check("watched sticks", ns.repTracked() == 101 and w.label.text == "Court  3k/9k (33%)")
+end
+do -- unwatched follows the latest gainer
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.savedVars = { repFaction = 101 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("persisted restores", ns.repTracked() == 101 and ns.repFollowingWatched() == false)
+  w.factions[2].standing = 9000
+  repEvent(w)
+  check("follow switches", ns.repTracked() == 202)
+  check("follow repaints", w.label.text == "Wardens  3k/6k (50%)")
+  check("follow persists", ns.db.repFaction == 202)
+end
+do -- watching mid-session takes the bar on the next tick
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.savedVars = { repFaction = 202 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("unwatched persists", ns.repTracked() == 202)
+  w.watchedID = 101 -- no event fires: the ticker notices
+  w.tickers[1].fn()
+  check("watch takes over", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+  check("watch repaints", w.label.text == "Court  3k/9k (33%)")
+end
+do -- unwatching falls back to the latest gainer
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.factions[2].standing = 9000
+  repEvent(w)
+  check("gains noted under watched", ns.repTracked() == 101)
+  w.watchedID = nil
+  w.tickers[1].fn()
+  check("unwatch falls back", ns.repTracked() == 202 and ns.repFollowingWatched() == false)
+end
+do -- losses never steal tracking, and later gains still count
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+  })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.factions[1].standing = 14000
+  repEvent(w)
+  check("loss keeps tracking", ns.repTracked() == 101)
+  check("loss resyncs baseline", ns.repBaselineRead().have == 2000)
+  w.now = w.now + 100
+  w.factions[1].standing = 15000
+  repEvent(w)
+  hover(w)
+  check("gains after loss count", tiptexts(w)[1] == "36k Rep/hr · 10m")
+end
+do -- one event with gains on two rows follows the largest
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.savedVars = { repFaction = 101 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.factions[1].standing = 15100
+  w.factions[2].standing = 8500
+  repEvent(w)
+  check("largest gain wins", ns.repTracked() == 202)
+end
+do -- missing reputation API degrades to untracked, never an error
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  w.env.C_Reputation = nil
+  clientLoaded(w)
+  check("no rep namespace untracked", ns.repTracked() == nil and w.label.text == "No faction tracked")
+  check("no rep namespace shown", w.frame.shown == true)
+end
+do -- missing renown API leaves a major faction unreadable, not misread
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 301, name = "Amani", reaction = 5, lo = 0, hi = 3000, standing = 1200 } })
+  w.watchedID = 301
+  w.isMajor[301] = true
+  w.major[301] = { level = 7, threshold = 3000, hasMax = false }
+  local ns = loadAddon(w)
+  w.env.C_MajorFactions = nil
+  clientLoaded(w)
+  check("no renown api untracked", ns.repTracked() == nil)
+end
+do -- unreadable rows never track
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 1, name = "H", header = true } })
+  w.watchedID = 999
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("dead rows untracked", ns.repTracked() == nil and w.label.text == "No faction tracked")
+end
+
+-- 37. Renown, Paragon, and friendship render through the same bar.
+do -- renown: blue fill, renown stats
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 301, name = "Amani", reaction = 5, lo = 0, hi = 3000, standing = 1200 } })
+  w.watchedID = 301
+  w.isMajor[301] = true
+  w.major[301] = { level = 7, threshold = 3000, hasMax = false }
+  loadAddon(w)
+  clientLoaded(w)
+  check("renown label", w.label.text == "Amani  1k/3k (40%)")
+  check("renown fill blue", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue")
+  check("renown stats", w.sub.text == "Renown 7 · 40% to 8")
+  check("renown animated", w.bar.animated[1] == 1200 and w.bar.animated[2] == 0
+    and w.bar.animated[3] == 3000 and w.bar.animated[4] == 7)
+end
+do -- maxed renown: name-only label, cap title
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 301, name = "Amani", reaction = 5, lo = 0, hi = 3000, standing = 3000 } })
+  w.watchedID = 301
+  w.isMajor[301] = true
+  w.major[301] = { level = 25, threshold = 3000, hasMax = true }
+  loadAddon(w)
+  clientLoaded(w)
+  check("renown maxed label", w.label.text == "Amani")
+  check("renown maxed rate", w.rate.text == "Renown 25")
+  hover(w)
+  check("renown maxed tooltip", tiptexts(w)[1] == "Renown 25" and tiptexts(w)[2] == "Rank complete")
+  check("renown maxed hides stats", w.sub.shown == false)
+end
+do -- paragon: green cycle bar, reward line when pending
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 401, name = "Para", reaction = 8, lo = 42000, hi = 43000, standing = 42999 } })
+  w.watchedID = 401
+  w.paragon[401] = { current = 12300, threshold = 10000 }
+  loadAddon(w)
+  clientLoaded(w)
+  check("paragon label", w.label.text == "Para  2k/10k (23%)")
+  check("paragon fill green", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("paragon stats", w.sub.text == "Paragon · 23% to reward")
+  hover(w)
+  check("paragon no pending line", not tiphas(w, "Paragon reward pending"))
+  w.paragon[401].pending = true
+  repEvent(w)
+  check("paragon pending full", w.bar.value == 10000)
+  hover(w)
+  check("paragon pending line", tiphas(w, "Paragon reward pending"))
+end
+do -- major-faction paragon goes blue
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 401, name = "Para", reaction = 8, lo = 42000, hi = 43000, standing = 42999 } })
+  w.watchedID = 401
+  w.paragon[401] = { current = 12300, threshold = 10000 }
+  w.isMajor[401] = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("major paragon blue", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue")
+end
+do -- friendship: forced green, rank words
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 501, name = "Valeera", reaction = 5, lo = 0, hi = 0, standing = 0 } })
+  w.watchedID = 501
+  w.friendship[501] = { fid = 9001, standing = 2500, reaction = "Good Friend",
+    lo = 2000, next = 4000, curLevel = 3, maxLevel = 6 }
+  loadAddon(w)
+  clientLoaded(w)
+  check("friendship label", w.label.text == "Valeera  500/2k (25%)")
+  check("friendship fill green", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+  check("friendship stats", w.sub.text == "Good Friend · 25% to next rank")
+  check("friendship animated level", w.bar.animated[4] == 3)
+  hover(w)
+  check("friendship tooltip", tiphas(w, "Valeera: Good Friend · 25% to next rank"))
+end
+do -- maxed friendship: name-only label, rank title
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 501, name = "Valeera", reaction = 5, lo = 0, hi = 0, standing = 0 } })
+  w.watchedID = 501
+  w.friendship[501] = { fid = 9001, standing = 8000, reaction = "Best Friend",
+    lo = 6000, next = nil, curLevel = 6, maxLevel = 6 }
+  loadAddon(w)
+  clientLoaded(w)
+  check("friendship maxed label", w.label.text == "Valeera")
+  check("friendship maxed rate", w.rate.text == "Best Friend")
+end
+do -- exalted standard: name-only label, cap title
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 8, lo = 42000, hi = 43000, standing = 42999 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  check("exalted label", w.label.text == "Court")
+  check("exalted rate", w.rate.text == "Exalted")
+  check("exalted hides stats", w.sub.shown == false)
+  hover(w)
+  check("exalted tooltip", tiptexts(w)[1] == "Exalted" and tiptexts(w)[2] == "Rank complete"
+    and tiphas(w, "Court — Exalted"))
+end
+do -- rep paints through the plain-bar fallback too
+  local w = newWorld()
+  w.failTemplate = true
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  check("rep fallback paints", w.bar.value == 3000 and w.bar.minmax[2] == 9000)
+  check("rep fallback fill atlas", w.bar.fillTex.atlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
+end
+
+-- 38. Rep/hr flows like XP/hr; the tooltip teaches the faction.
+do -- gains accumulate into the session rate
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 5, lo = 6000, hi = 15000, standing = 6000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 1800
+  w.factions[1].standing = 6500
+  repEvent(w)
+  hover(w)
+  check("rep rate line", tiptexts(w)[1] == "3k Rep/hr · 4h15m")
+  check("rep rate sub", tiptexts(w)[2] == "Last 10m")
+  check("rep faction line", tiptexts(w)[3] == "Court: Friendly · 6% to Honored")
+  check("rep follow line", tiphas(w, "Following watched faction"))
+end
+do -- full tooltip order in rep mode; XP-only buffs stay out
+  local w = newWorld()
+  capWorld(w)
+  w.warMode, w.restedXp = true, 500
+  w.auras[46668] = {}
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("rep tooltip order", table.concat(tiptexts(w), "|") == table.concat({
+    "Collecting data",
+    "Collecting data",
+    "Court: Honored · 33% to Revered",
+    "+10% WHEE!",
+    "+10% Wickerman (Hallow's End)",
+    "+10% Spirit of Sharing (Pilgrim's Bounty)",
+    "Following watched faction",
+    "/vxp shows or hides it. /vxp help lists the rest.",
+  }, "|"))
+  check("rep bonus green", sameColor(tipcolor(w, "+10% WHEE!"), GREEN_C))
+end
+do -- live bonus flag joins the green lines, unvalued
+  local w = newWorld()
+  capWorld(w)
+  w.auras[46668] = {}
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000,
+    standing = 15000, bonus = true } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("rep bonus flag line", greenlines(w) == "+10% WHEE!\nBonus rep gain")
+end
+do -- bare rep bar names the gap in red
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("rep no-bonus red", sameColor(tipcolor(w, "No rep bonus"), RED_C))
+end
+do -- pause and reset work in rep mode
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 12000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  local slash = w.env.SlashCmdList.VOCXP
+  w.now = w.now + 60
+  w.factions[1].standing = 12300
+  repEvent(w)
+  slash("pause")
+  hover(w)
+  check("rep pause display", tiptexts(w)[1] == "Paused" and tiptexts(w)[2] == "Tracking paused")
+  slash("pause")
+  hover(w)
+  check("rep resume collects", tiptexts(w)[1] == "Collecting data")
+  slash("reset")
+  hover(w)
+  check("rep reset collects", tiptexts(w)[1] == "Collecting data")
+  check("rep reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset")
+end
+do -- forever rep mode recommends nothing
+  local w = newWorld()
+  capWorld(w)
+  w.addonInterfaceVersion = 16001
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("forever rep missing quiet", missinglines(w) == "Following watched faction")
+  check("forever rep no bonus", tiphas(w, "No rep bonus"))
+end
+do -- rep copy branches on the unit
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("rep ready title", ns.titleText({ status = "ready", xpPerHour = 3600, etaSeconds = 600, unit = "Rep" })
+    == "4k Rep/hr · 10m")
+  check("rep zero title", ns.titleText({ status = "no-recent-xp", xpPerHour = 0, unit = "Rep" }) == "0 Rep/hr")
+  check("untracked title", ns.titleText({ status = "untracked" }) == "No reputation tracked")
+  check("rep-capped title", ns.titleText({ status = "rep-capped", capLabel = "Exalted" }) == "Exalted")
+  check("rep-capped fallback", ns.titleText({ status = "rep-capped" }) == "Rank complete")
+  check("rep silent sub", ns.subText({ status = "no-recent-xp", observedSeconds = 600, windowSeconds = 600, unit = "Rep" })
+    == "No rep in the last 10m")
+  check("untracked sub", ns.subText({ status = "untracked" }) == "Watch a faction to track it")
+  check("rep-capped sub", ns.subText({ status = "rep-capped" }) == "Rank complete")
+  check("rep awaiting sub", ns.subText({ status = "awaiting-level-update", unit = "Rep" })
+    == "Rank complete; awaiting update")
+  check("rep unavailable sub", ns.subText({ status = "unavailable", unit = "Rep" }) == "Waiting for rep data")
+end
+
+-- 39. Rep sessions persist the faction and survive zone loads.
+do -- tracked ID persists across reloads
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.savedVars = { repFaction = 202 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("reload restores faction", ns.repTracked() == 202 and w.label.text == "Wardens  2k/6k (33%)")
+end
+do -- stale persisted ID falls through to untracked
+  local w = newWorld()
+  capWorld(w)
+  w.savedVars = { repFaction = 999 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("stale persisted clears", ns.repTracked() == nil and ns.db.repFaction == nil)
+  check("stale persisted guides", w.label.text == "No faction tracked")
+end
+do -- zone load keeps rep history
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 12000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.factions[1].standing = 12300
+  repEvent(w)
+  w.now = w.now + 30
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  hover(w)
+  check("rep zone keeps history", tiptexts(w)[1] == "12k Rep/hr · 44m")
+end
+do -- character switch in rep mode starts over
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 12000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.factions[1].standing = 12300
+  repEvent(w)
+  w.guid = "Player-11-0002"
+  w.now = w.now + 5
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  hover(w)
+  check("rep switch clears", tiptexts(w)[1] == "Collecting data")
+end
+do -- cap event while still capped is a no-op
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 12000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.factions[1].standing = 12300
+  repEvent(w)
+  hover(w)
+  local line = tiptexts(w)[1]
+  maxLevelEvent(w)
+  hover(w)
+  check("capped cap-event no-op", tiptexts(w)[1] == line and w.label.text == "Court  300/9k (3%)")
+end
+
+-- 40. Cap detection is a level comparison like Blizzard's own bar:
+-- at cap the client reports a phantom 100M requirement, never 0.
+do -- the live report: level 90 with max 100M pivots to rep
+  local w = newWorld()
+  w.level, w.xp, w.max = 90, 0, 100000000
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  check("phantom max pivots", w.frame.shown == true and w.label.text == "Court  3k/9k (33%)")
+  check("phantom max hides native", w.native.shown == false)
+end
+do -- effective max level mirrors GameRulesUtil
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("standard cap 90", ns.effectiveMaxLevel() == 90)
+  check("90 capped", ns.isLevelCapped(90, 100000000) == true)
+  check("10 uncapped", ns.isLevelCapped(10, 69130) == false)
+  check("wild level uncapped", ns.isLevelCapped(nil, 0) == false)
+  w.timerunning = true
+  w.expansionMaxLevel, w.latestMaxLevel, w.playerMaxLevel = 80, 90, 90
+  check("timerunner follows latest", ns.effectiveMaxLevel() == 90)
+  check("timerunner 85 uncapped", ns.isLevelCapped(85, 100000000) == false)
+  w.timerunning, w.trial = false, true
+  w.playerMaxLevel = 20
+  check("trial cap 20", ns.effectiveMaxLevel() == 20)
+  check("trial 20 capped", ns.isLevelCapped(20, 5000) == true)
+end
+do -- watched struct wins over a stale ByID read (seen live: 3000 vs 1803)
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 301, name = "Amani", reaction = 5, lo = 0, hi = 2500,
+    standing = 1803, byIDStanding = 3000 } })
+  w.watchedID = 301
+  w.isMajor[301] = true
+  w.major[301] = { level = 7, threshold = 2500, hasMax = false }
+  loadAddon(w)
+  clientLoaded(w)
+  check("watched struct wins", w.label.text == "Amani  2k/2k (72%)")
+  check("watched struct fills partial", w.bar.value == 1803)
+end
+do -- missing max-level APIs fall back to the legacy zero-max test
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.env.GetMaxLevelForLatestExpansion, w.env.GetMaxLevelForPlayerExpansion = nil, nil
+  w.env.GetMaxPlayerLevel, w.env.PlayerIsTimerunning, w.env.IsTrialAccount = nil, nil, nil
+  check("no api unknown cap", ns.effectiveMaxLevel() == nil)
+  check("no api zero max capped", ns.isLevelCapped(10, 0) == true)
+  check("no api nonzero uncapped", ns.isLevelCapped(10, 1000) == false)
+end
+do -- partial APIs degrade to the per-player max
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.env.GetMaxLevelForLatestExpansion, w.env.GetMaxLevelForPlayerExpansion = nil, nil
+  w.env.PlayerIsTimerunning, w.env.IsTrialAccount = nil, nil
+  check("partial cap 90", ns.effectiveMaxLevel() == 90)
+  check("partial 90 capped", ns.isLevelCapped(90, 100000000) == true)
+end
+
+-- 41. Follow-latest preference flips the tracking priority.
+do -- followLatest ignores the watched faction once gains arrive
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  w.savedVars = { followLatest = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("follow falls back to watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+  w.factions[2].standing = 9000
+  repEvent(w)
+  check("follow takes gains", ns.repTracked() == 202 and ns.repFollowingWatched() == false)
+  check("follow repaints", w.label.text == "Wardens  3k/6k (50%)")
+  hover(w)
+  check("follow line", tiphas(w, "Following latest gains"))
+end
+do -- persisted faction bridges sessions until fresh gains
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  w.savedVars = { followLatest = true, repFaction = 202 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("follow restores persisted", ns.repTracked() == 202 and ns.repFollowingWatched() == false)
+  w.factions[1].standing = 16000
+  repEvent(w)
+  check("follow takes watched gains too", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+end
+do -- toggling followLatest live switches immediately
+  local w = newWorld()
+  w.withSettings = true
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  w.env.VocXPDB = w.savedVars
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  w.factions[2].standing = 9000
+  repEvent(w)
+  check("default keeps watched", ns.repTracked() == 101)
+  ns.db.followLatest = true
+  w.settingCallbacks["VocXP_followLatest"]()
+  check("toggle on follows gains", ns.repTracked() == 202)
+  ns.db.followLatest = false
+  w.settingCallbacks["VocXP_followLatest"]()
+  check("toggle off restores watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")
