@@ -24,12 +24,16 @@ globals = {
 -- WoW API and UI globals read by the addon.
 read_globals = {
   "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check (live + forever)
+  "C_GossipInfo", "C_MajorFactions", "C_Reputation", -- rep mode: friendship, renown, standings (live + forever)
   "C_PaperDollInfo", "C_PvP", "C_QuestLog", "C_Timer", "C_UnitAuras",
   "CreateFrame", "EventRegistry", "GameTooltip", "GetInventoryItemQuality",
   "GetQuestLogRewardXP", "GetTime", "GetXPExhaustion",
   "IsInInstance", "IsXPUserDisabled",
   "Settings", "StatusTrackingBarManager", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
+  "MAX_REPUTATION_REACTION", -- standing ceiling, Blizzard's ReputationFrame (live + forever)
+  "GetMaxLevelForLatestExpansion", "GetMaxLevelForPlayerExpansion", "GetMaxPlayerLevel",
+  "PlayerIsTimerunning", "IsTrialAccount", -- cap detection mirrors GameRulesUtil (live + forever)
   "PlaySound", "SOUNDKIT", -- presence-gated; ns.play falls back to numeric IDs
 }
 

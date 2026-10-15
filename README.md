@@ -6,7 +6,9 @@ experience bar: your level progress with rested XP and
 ready-to-turn-in quest XP overlaid, hiding Blizzard's default bar
 while it shows. Hover for XP per hour, time to the next level, and
 every XP bonus you are running, plus the ones you are missing and
-how to get them.
+how to get them. At max level the same bar follows reputation
+instead: your watched faction (or the latest gains) with Rep/hr
+and time to the next rank.
 
 ## Install
 
@@ -85,10 +87,26 @@ Mode, Warband Mentored, and the event buffs are unconfirmed
 there, so the addon shows them when active but never recommends
 them. Regalia never appears there: the heirloom set is retail-only.
 The bar, rate, and forecast work the same on both clients.
+Reputation mode works there too, minus rep buff recommendations
+(all unconfirmed there).
 
-Max-level characters never see the bar at all: the addon hides,
-restores the default bar, and runs no ticker and no XP, level,
-aura, or quest event handlers for them.
+At max level the bar pivots to reputation automatically: it follows
+the watched faction ("Show as Experience Bar"), or the last faction
+to gain reputation when nothing is watched, with Rep/hr and time
+to the next rank on the rate line and the rank context below it
+(`Honored · 33% to Revered`, `Renown 7 · 40% to 8`) across
+standard standings, Renown, Paragon, and friendship tracks,
+including a heads-up when a Paragon reward is pending. The fill takes
+the faction's standing color (blue for Renown); rested, quest, War
+Mode, Mentored, and Regalia lines retire with the XP side, and the
+bonus list narrows to the buffs that raise reputation (Faire and
+Wickerman pairs, Spirit of Sharing, and the live bonus flag). Turn it off
+with "Track reputation at max level" to restore the old dormancy:
+hidden bar, native bar back, nothing running. "Follow latest
+reputation gains" flips the priority: the bar always follows your
+latest earners instead of the watched faction. The tracked
+faction survives reloads; with nothing watched and no gains yet,
+the bar says so instead of guessing.
 
 ## Config
 
@@ -97,6 +115,8 @@ Settings > AddOns > VocXP, or `/vxp config`:
 - Show the bar (default on)
 - Hide the default XP bar (default on; hides Blizzard's whole
   status cluster, so watched reputation and honor bars hide too)
+- Track reputation at max level (default on)
+- Follow latest reputation gains (default off)
 - Lock the position (default off)
 
 All are the same switches the slash line flips, and every change
@@ -117,11 +137,15 @@ holiday auras, heirloom count) and nothing is multiplied twice:
 awarded XP already
 includes every bonus. The default bar stays hidden through a
 re-applied hide, and an open Edit Mode session tempers the lock
-so the bar drags while you arrange the rest of the UI.
+so the bar drags while you arrange the rest of the UI. At max
+level the same rolling window runs over reputation snapshots
+instead of XP: gains diff from the tracked faction's baseline, the
+tracked faction resolves watched-first, and switching factions
+restarts observation.
 
 ## What's inside
 
-- `main.lua`: the whole addon: XP bar, overlays, quest scan, rolling XP/hr, tooltip, settings, slash
+- `main.lua`: the whole addon: XP/rep bar, overlays, quest scan, rolling rates, tooltip, settings, slash
 - `VocXP.toc` / `VocXP_Forever.toc`: metadata for Retail and the Forever client
 - `tests/run.lua`: stub-harness regression tests, no WoW client needed
 
