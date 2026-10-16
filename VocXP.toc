@@ -1,6 +1,6 @@
 ## Interface: 120105
 ## Title: VocXP
-## Notes: Elegant XP bar with rates and bonuses; reputation at max level. (/vxp)
+## Notes: XP bar with XP per hour, time to level, rested XP, and every active XP bonus. Tracks reputation at max level. (/vxp)
 ## Author: vocino
 ## Version: @project-version@
 ## Category: Quests & Leveling
