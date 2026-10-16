@@ -3,7 +3,7 @@
 ## Code Map
 
 - `main.lua`: the whole addon: rolling XP rate, time-to-level, bonus list, the tooltip-styled readout, Settings panel, slash
-- `VocXP.toc` / `VocXP_Forever.toc`: addon metadata (dual toc, shared `main.lua`; no `RequiredDeps`)
+- `VocXP.toc` / `VocXP_Camelot.toc`: addon metadata (dual toc, shared `main.lua`; no `RequiredDeps`)
 - `tests/run.lua`: stub-harness regression tests (`lua tests/run.lua`)
 - `FAMILY.md`: conventions shared by every Voc addon
 - `VERSIONING.md`: tag-driven semver releases (identical across the family)
