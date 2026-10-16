@@ -47,11 +47,18 @@ local COLORS = ns.COLORS
 -- holding the wrong type resets; unknown keys are left alone.
 local defaults = { shown = true, locked = false, hideDefault = true, repMode = true, followLatest = false, point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
+local VALID_POINTS = {
+  TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true,
+  RIGHT = true, BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
+}
 local function opts()
   if type(ns.db) ~= "table" then ns.db = {} VocXPDB = ns.db end
   for k, v in pairs(defaults) do
     if type(ns.db[k]) ~= type(v) then ns.db[k] = v end
   end
+  -- A hand-edited anchor the client cannot SetPoint to would error on
+  -- every login; fall back to the default instead of breaking the bar.
+  if not VALID_POINTS[ns.db.point] then ns.db.point = defaults.point end
   return ns.db
 end
 ns.opts = opts
@@ -290,10 +297,13 @@ end
 -- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
 -- a StatusBar wearing the native XP fill atlases, the native
 -- background, prediction-atlas rested and quest overlays, and a
--- GameFontHighlight label. Fixed size: bars don't autofit.
-ns.BAR_WIDTH = 571 -- the native container width; the ribs land at 1:1
+-- GameFontHighlight label. Sized from the live native geometry every
+-- refresh (see ns.applyGeometry), so the stroke and ticks land at 1:1
+-- on whatever client is running.
+ns.BAR_WIDTH = 571 -- Mainline container width, the fallback everywhere
 ns.TROUGH_WIDTH = 565 -- InitializeBars seats the bar at container minus 6
 ns.TROUGH_HEIGHT = 11
+ns.MAX_SEGMENTS = 40 -- validation ceiling, twice the widest native bar
 ns.ART_HEIGHT = 17 -- the native container height; rate and stats live below it
 ns.FRAME_HEIGHT = 55 -- art zone, rate line, and stats line
 ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
@@ -302,6 +312,7 @@ ns.PREDICT_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction"
 ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
 ns.FRAME_ATLAS = "UI-HUD-ExperienceBar-Frame"
 ns.PIP_ATLAS = "UI-HUD-ExperienceBar-Frame-Pip"
+ns.DIVIDER_ATLAS = "ui-hud-experiencebar-divider" -- Camelot segment ticks
 ns.FLARE_XP_ATLAS = "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
 ns.FLARE_RESTED_ATLAS = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
 ns.LEVELUP_XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience-2x-Flipbook"
@@ -363,8 +374,8 @@ local barOk, animatedBar = pcall(CreateFrame, "StatusBar", nil, frame,
   "GradualAnimatedStatusBarTemplate")
 local bar = (barOk and animatedBar) or CreateFrame("StatusBar", nil, frame)
 local hasAnimatedBar = barOk and animatedBar ~= nil
--- InitializeBars seats the bar at (1, -1) of the 571x17 container,
--- 565x11; the stroke centers on the art zone at its own native size.
+-- InitializeBars seats the trough at (1, -1) of the container,
+-- resized every refresh from the live native geometry (see below).
 bar:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
 bar:SetSize(ns.TROUGH_WIDTH, ns.TROUGH_HEIGHT)
 if not hasAnimatedBar then
@@ -413,8 +424,9 @@ questFill:Hide()
 -- The stroke around the bar and the rested pip: the same two atlas
 -- layers Blizzard's own bar wears; the stroke hangs on the frame.
 local frameTex = frame:CreateTexture(nil, "OVERLAY")
-frameTex:SetPoint("CENTER", bar, "CENTER", 2, -2)
-setAtlasOrHide(frameTex, ns.FRAME_ATLAS, true)
+frameTex:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, 0)
+frameTex:SetSize(ns.BAR_WIDTH, ns.ART_HEIGHT)
+setAtlasOrHide(frameTex, ns.FRAME_ATLAS, false)
 
 local pip = bar:CreateTexture(nil, "OVERLAY", nil, 1)
 pip:SetSize(10, 14)
@@ -460,6 +472,109 @@ sub:SetPoint("TOP", rate, "BOTTOM", 0, -2)
 sub:SetShadowOffset(1, -1)
 snapRegion(sub)
 sub:Hide()
+
+-- Native geometry ------------------------------------------------------
+-- The native bar is not one size: Mainline seats a 571x17 container
+-- (565x11 trough, no segments) while Camelot seats 1192x17 (1189x14,
+-- 20 segments with divider ticks). VocXP reads the live numbers every
+-- refresh and wears them, so the stroke, trough, and ticks land at 1:1
+-- on whatever client is running. Every read validates and falls back
+-- to the Mainline numbers; a missing native bar is never an error.
+function ns.nativeGeometry()
+  local width, segments, adjust, pipY = nil, nil, nil, nil
+  local mgr = StatusTrackingBarManager
+  local container = type(mgr) == "table" and mgr.MainStatusTrackingBarContainer or nil
+  if type(container) == "table" then
+    if type(container.GetWidth) == "function" then
+      local ok, w = pcall(container.GetWidth, container)
+      if ok and type(w) == "number" and w >= 200 and w <= 3000 then width = w end
+    end
+    if type(container.GetExpectedSegments) == "function" then
+      local ok, s = pcall(container.GetExpectedSegments, container)
+      if ok and type(s) == "number" and s >= 1 and s <= ns.MAX_SEGMENTS then
+        segments = math.floor(s)
+      end
+    end
+  end
+  if width == nil and type(STATUS_BAR_CONTAINER_WIDTH) == "number"
+      and STATUS_BAR_CONTAINER_WIDTH >= 200 and STATUS_BAR_CONTAINER_WIDTH <= 3000 then
+    width = STATUS_BAR_CONTAINER_WIDTH
+  end
+  if segments == nil and type(STATUS_BAR_NUM_SEGMENTS) == "number"
+      and STATUS_BAR_NUM_SEGMENTS >= 1 and STATUS_BAR_NUM_SEGMENTS <= ns.MAX_SEGMENTS then
+    segments = math.floor(STATUS_BAR_NUM_SEGMENTS)
+  end
+  if type(STATUS_BAR_SIZE_ADJUSTMENT) == "number"
+      and STATUS_BAR_SIZE_ADJUSTMENT >= 0 and STATUS_BAR_SIZE_ADJUSTMENT <= 16 then
+    adjust = STATUS_BAR_SIZE_ADJUSTMENT
+  end
+  if type(EXHAUSTION_TICK_OFFSET_Y) == "number"
+      and EXHAUSTION_TICK_OFFSET_Y >= -8 and EXHAUSTION_TICK_OFFSET_Y <= 8 then
+    pipY = EXHAUSTION_TICK_OFFSET_Y
+  end
+  width = width or ns.BAR_WIDTH
+  segments = segments or 1
+  adjust = adjust or 6
+  pipY = pipY or 2
+  return { width = width, segments = segments,
+    troughW = width - adjust, troughH = ns.ART_HEIGHT - adjust, pipY = pipY }
+end
+
+-- Segment ticks, Camelot's divider look. The native template draws
+-- them when it exists; otherwise a 3x10 frame wears the divider atlas
+-- by hand, and hides when the atlas is missing too.
+local dividers = {}
+
+local function ensureDivider(i)
+  if dividers[i] ~= nil then return dividers[i] end
+  local ok, d = pcall(CreateFrame, "Frame", nil, frame, "StatusBarDividerTemplate")
+  if ok and d ~= nil then
+    snapRegion(d)
+    dividers[i] = d
+    return d
+  end
+  local f = CreateFrame("Frame", nil, frame)
+  f:SetSize(3, 10)
+  local tex = f:CreateTexture(nil, "OVERLAY")
+  tex:SetAllPoints(f)
+  f.usable = setAtlasOrHide(tex, ns.DIVIDER_ATLAS, false)
+  snapRegion(f)
+  snapRegion(tex)
+  dividers[i] = f
+  return f
+end
+
+-- Seat the frame, trough, stroke, and ticks on the live native
+-- geometry. Runs every refresh but only moves regions when the numbers
+-- change (a gamepad toggle resizes native mid-session).
+local appliedGeo = nil
+
+function ns.applyGeometry()
+  local geo = ns.nativeGeometry()
+  if appliedGeo ~= nil and appliedGeo.width == geo.width
+      and appliedGeo.segments == geo.segments
+      and appliedGeo.troughW == geo.troughW
+      and appliedGeo.troughH == geo.troughH then
+    return geo
+  end
+  appliedGeo = geo
+  frame:SetSize(geo.width, ns.FRAME_HEIGHT)
+  bar:SetSize(geo.troughW, geo.troughH)
+  frameTex:SetSize(geo.width, ns.ART_HEIGHT)
+  local ticks = geo.segments - 1
+  for i = 1, ticks do
+    local d = ensureDivider(i)
+    d:ClearAllPoints()
+    d:SetPoint("LEFT", frame, "TOPLEFT", geo.width / geo.segments * i, -ns.ART_HEIGHT / 2)
+    d:SetShown(d.usable ~= false)
+  end
+  local i = ticks + 1
+  while dividers[i] ~= nil do
+    dividers[i]:SetShown(false)
+    i = i + 1
+  end
+  return geo
+end
 
 -- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
@@ -1310,6 +1425,7 @@ local function repEstimate(progress)
 end
 
 local function refreshRep(o)
+  ns.applyGeometry()
   ns.maybeSwitchRep()
   local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
   local est = repEstimate(progress)
@@ -1360,6 +1476,7 @@ local function refresh()
     refreshRep(o)
     return
   end
+  local geo = ns.applyGeometry()
   local est = ns.estimate(rateTracker, now, baseline, paused)
   -- The ETA reads the longer basis (which also prunes it); the rate
   -- window still gates whether any ETA shows at all.
@@ -1386,7 +1503,7 @@ local function refresh()
       isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
       isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
     if isRested and restOk then
-      restFill:SetWidth(seg.restedEnd * ns.TROUGH_WIDTH)
+      restFill:SetWidth(seg.restedEnd * geo.troughW)
       -- Crop like the native bar (ExhaustionTickMixin), never stretch:
       -- the atlas maps across the full bar width.
       restFill:SetTexCoord(0, seg.restedEnd, 0, 1)
@@ -1396,10 +1513,10 @@ local function refresh()
     end
     if seg.questEnd > seg.progress and questOk then
       questFill:ClearAllPoints()
-      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * ns.TROUGH_WIDTH, 0)
+      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * geo.troughW, 0)
       questFill:SetPoint("TOP", bar, "TOP", 0, 0)
       questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
-      questFill:SetWidth((seg.questEnd - seg.progress) * ns.TROUGH_WIDTH)
+      questFill:SetWidth((seg.questEnd - seg.progress) * geo.troughW)
       questFill:SetTexCoord(seg.progress, seg.questEnd, 0, 1)
       questFill:Show()
     else
@@ -1409,7 +1526,7 @@ local function refresh()
     -- like the native one (hideAtBarEdge), and hidden without rested.
     if pipOk and isRested and seg.restedEnd >= 0.01 and seg.restedEnd <= 0.99 then
       pip:ClearAllPoints()
-      pip:SetPoint("CENTER", bar, "LEFT", seg.restedEnd * ns.TROUGH_WIDTH, 2)
+      pip:SetPoint("CENTER", bar, "LEFT", seg.restedEnd * geo.troughW, geo.pipY)
       pip:Show()
     else
       pip:Hide()
@@ -1547,7 +1664,10 @@ local function enterXPMode()
   setEvents(repEvents, false)
   setEvents(xpEvents, true)
   frame:RegisterEvent("UNIT_AURA")
-  if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
+  if not ticker and type(C_Timer) == "table"
+      and type(C_Timer.NewTicker) == "function" then
+    ticker = C_Timer.NewTicker(1, refresh)
+  end
 end
 
 local function enterRepMode()
@@ -1555,7 +1675,10 @@ local function enterRepMode()
   setEvents(xpEvents, false)
   setEvents(repEvents, true)
   frame:RegisterEvent("UNIT_AURA")
-  if not ticker then ticker = C_Timer.NewTicker(1, refresh) end
+  if not ticker and type(C_Timer) == "table"
+      and type(C_Timer.NewTicker) == "function" then
+    ticker = C_Timer.NewTicker(1, refresh)
+  end
   repCache = {}
   ns.scanRepGains() -- seed the cache: arriving gains diff, nothing awards
   local id = ns.resolveRepFaction()
