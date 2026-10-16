@@ -39,7 +39,8 @@ ns.COLORS = {
   muted = { 0.5, 0.5, 0.5 },
   red = { 0.9, 0.3, 0.25 },
   green = { 0.25, 0.9, 0.35 },
-  gain = { 0.901, 0.8, 0.601 }, -- Blizzard's pending-gain tint (the XP overlay)
+  rest = { 0.3, 0.6, 1 }, -- rested reach: clear blue over the purple fill
+  quest = { 1, 0.7, 0.15 }, -- banked quest XP: deeper gold, darker than the title face
 }
 local COLORS = ns.COLORS
 
@@ -296,7 +297,7 @@ end
 
 -- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
 -- a StatusBar wearing the native XP fill atlases, the native
--- background, prediction-atlas rested and quest overlays, and a
+-- background, blue rested and gold quest overlays on classic bar grain, and a
 -- GameFontHighlight label. Sized from the live native geometry every
 -- refresh (see ns.applyGeometry), so the stroke and ticks land at 1:1
 -- on whatever client is running.
@@ -308,7 +309,8 @@ ns.ART_HEIGHT = 17 -- the native container height; rate and stats live below it
 ns.FRAME_HEIGHT = 55 -- art zone, rate line, and stats line
 ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
 ns.RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested"
-ns.PREDICT_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction"
+-- ns.PREDICT_ATLAS retired: both overlays are solid palette colors now,
+-- so the prediction material has no layer left to paint.
 ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
 ns.FRAME_ATLAS = "UI-HUD-ExperienceBar-Frame"
 ns.PIP_ATLAS = "UI-HUD-ExperienceBar-Frame-Pip"
@@ -403,22 +405,21 @@ restFill:SetPoint("LEFT", bar, "LEFT", 0, 0)
 restFill:SetPoint("TOP", bar, "TOP", 0, 0)
 restFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
 restFill:SetWidth(0)
-local restOk = setAtlasOrHide(restFill, ns.PREDICT_ATLAS, false)
+-- Blizzard's own bar grain under a blue tint: atlas fills all read
+-- purple-family, and a flat color lost the texture. The classic statusbar
+-- file is neutral grain, so the tint renders true on both clients.
+restFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+restFill:SetVertexColor(COLORS.rest[1], COLORS.rest[2], COLORS.rest[3])
 restFill:Hide()
 
 local questFill = bar:CreateTexture(nil, "ARTWORK", nil, 0)
 questFill:SetPoint("TOP", bar, "TOP", 0, 0)
 questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
 questFill:SetWidth(0)
--- Quest reach wears the same prediction material as rested, tinted
--- with Blizzard's pending-gain gold: one material for "beyond the
--- fill", warm where the XP is banked, cool where it is projected.
--- Opaque, never ADD-blended, so its right edge stays a hard line
--- against the rested reach behind it.
-local questOk = setAtlasOrHide(questFill, ns.PREDICT_ATLAS, false)
-if questOk then
-  questFill:SetVertexColor(COLORS.gain[1], COLORS.gain[2], COLORS.gain[3])
-end
+-- Banked quest XP wears the same classic grain under a deeper gold tint:
+-- the flat slab read correct but foreign next to the native fills.
+questFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+questFill:SetVertexColor(COLORS.quest[1], COLORS.quest[2], COLORS.quest[3])
 questFill:Hide()
 
 -- The stroke around the bar and the rested pip: the same two atlas
@@ -1502,16 +1503,16 @@ local function refresh()
     applyBarArt(isRested and ns.RESTED_ATLAS or ns.XP_ATLAS,
       isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
       isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
-    if isRested and restOk then
+    if isRested then
       restFill:SetWidth(seg.restedEnd * geo.troughW)
-      -- Crop like the native bar (ExhaustionTickMixin), never stretch:
-      -- the atlas maps across the full bar width.
+      -- Crop, never stretch: the grain maps across the full bar width,
+      -- so each span keeps its native shading at any width.
       restFill:SetTexCoord(0, seg.restedEnd, 0, 1)
       restFill:Show()
     else
       restFill:Hide()
     end
-    if seg.questEnd > seg.progress and questOk then
+    if seg.questEnd > seg.progress then
       questFill:ClearAllPoints()
       questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * geo.troughW, 0)
       questFill:SetPoint("TOP", bar, "TOP", 0, 0)
