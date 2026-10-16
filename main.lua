@@ -614,7 +614,7 @@ local function warModePct()
 end
 
 -- Client flavor. The client loads exactly one of our tocs (the 1.x
--- VocXP_Forever.toc on Forever, the 12.x VocXP.toc on retail), so
+-- VocXP_Camelot.toc on Forever, the 12.x VocXP.toc on retail), so
 -- reading our own loaded Interface version back is literally asking
 -- what we're loaded into. Below 20000 is our classic-lineage toc;
 -- anything else keeps retail behavior, which is today's behavior
