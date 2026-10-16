@@ -32,6 +32,8 @@ read_globals = {
   "Settings", "StatusTrackingBarManager", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   "MAX_REPUTATION_REACTION", -- standing ceiling, Blizzard's ReputationFrame (live + forever)
+  "STATUS_BAR_CONTAINER_WIDTH", "STATUS_BAR_NUM_SEGMENTS", -- native bar geometry,
+  "STATUS_BAR_SIZE_ADJUSTMENT", "EXHAUSTION_TICK_OFFSET_Y", -- Forever's StatusTrackingBarConstants (absent on live)
   "GetMaxLevelForLatestExpansion", "GetMaxLevelForPlayerExpansion", "GetMaxPlayerLevel",
   "PlayerIsTimerunning", "IsTrialAccount", -- cap detection mirrors GameRulesUtil (live + forever)
   "PlaySound", "SOUNDKIT", -- presence-gated; ns.play falls back to numeric IDs

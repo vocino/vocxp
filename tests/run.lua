@@ -426,6 +426,8 @@ do
   check("db rebind keeps saved position", ns.db.point == "TOPLEFT" and ns.db.x == 10 and ns.db.y == -20)
   check("rebound frame hidden", w.frame.shown == false)
   check("rebound frame positioned", w.frame.point[1] == "TOPLEFT" and w.frame.point[2] == 10 and w.frame.point[3] == -20)
+  ns.db.point = "SIDEWAYS"
+  check("invalid saved anchor reset", ns.opts().point == "BOTTOM")
   check("mouse stays on for the tooltip", w.frame.mouse == true)
   check("opt-out keeps the native bar", w.native.shown == true)
   check("opt-out skips the notice", #w.printed == 0)
@@ -484,7 +486,8 @@ do
   check("label centered", w.label.point[1] == "CENTER" and w.label.point[4] == 0
     and w.label.point[5] == 1)
   check("bar uses the animated template", w.bar.template == "GradualAnimatedStatusBarTemplate")
-  check("frame stroke atlas", w.frameTex.atlas == "UI-HUD-ExperienceBar-Frame" and w.frameTex.atlasSize == true)
+  check("frame stroke spans the bar", w.frameTex.atlas == "UI-HUD-ExperienceBar-Frame"
+    and w.frameTex.atlasSize == false and w.frameTex.size[1] == 571 and w.frameTex.size[2] == 17)
   check("pip atlas", w.pip.atlas == "UI-HUD-ExperienceBar-Frame-Pip")
   check("pip starts hidden", w.pip.shown == false)
   check("art pins its size", w.bg.atlasSize == false and w.restFill.atlasSize == false
@@ -3136,6 +3139,114 @@ do -- toggling followLatest live switches immediately
   ns.db.followLatest = false
   w.settingCallbacks["VocXP_followLatest"]()
   check("toggle off restores watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+end
+
+-- 42. Native geometry: the bar wears the live native size and segments.
+do -- no native info falls back to the Mainline numbers, tick-free
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local geo = ns.nativeGeometry()
+  check("geometry defaults Mainline", geo.width == 571 and geo.segments == 1
+    and geo.troughW == 565 and geo.troughH == 11 and geo.pipY == 2)
+  check("defaults draw no ticks", #w.frames == 2)
+end
+do -- Camelot native seats the long segmented bar at 1:1
+  local w = newWorld()
+  w.restedXp = 300
+  loadAddon(w)
+  w.native.MainStatusTrackingBarContainer = {
+    GetWidth = function() return 1192 end,
+    GetExpectedSegments = function() return 20 end,
+  }
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = 3
+  w.env.EXHAUSTION_TICK_OFFSET_Y = 0
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  check("camelot frame seats native", w.frame.size[1] == 1192 and w.frame.size[2] == 55)
+  check("camelot trough seats native", w.bar.size[1] == 1189 and w.bar.size[2] == 14)
+  check("camelot stroke spans native", w.frameTex.size[1] == 1192 and w.frameTex.size[2] == 17)
+  check("camelot draws nineteen ticks", #w.frames == 21)
+  local ticksOk = true
+  for i = 3, 21 do
+    local d = w.frames[i]
+    ticksOk = ticksOk and d.template == "StatusBarDividerTemplate" and d.shown == true
+      and d.point[1] == "LEFT" and close(d.point[2], 1192 / 20 * (i - 2))
+      and d.point[3] == -8.5
+  end
+  check("camelot ticks land on the grid", ticksOk)
+  check("camelot rested spans the trough", close(w.restFill.width, 0.8 * 1189))
+  check("camelot pip rides low", w.pip.shown == true and w.pip.points[1][5] == 0)
+end
+do -- constants alone seat the bar when the container is unreadable
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.env.STATUS_BAR_CONTAINER_WIDTH = 1192
+  w.env.STATUS_BAR_NUM_SEGMENTS = 20
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = 3
+  clientLoaded(w)
+  local geo = ns.nativeGeometry()
+  check("constants seat camelot", geo.width == 1192 and geo.segments == 20
+    and geo.troughW == 1189 and geo.troughH == 14)
+  check("constants draw ticks", #w.frames == 21)
+end
+do -- wild native numbers fall back, never a broken bar
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.native.MainStatusTrackingBarContainer = {
+    GetWidth = function() return 50 end,
+    GetExpectedSegments = function() return 99 end,
+  }
+  w.env.STATUS_BAR_CONTAINER_WIDTH = "wide"
+  w.env.STATUS_BAR_NUM_SEGMENTS = 0
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = 99
+  w.env.EXHAUSTION_TICK_OFFSET_Y = "low"
+  clientLoaded(w)
+  local geo = ns.nativeGeometry()
+  check("wild geometry falls back", geo.width == 571 and geo.segments == 1
+    and geo.troughW == 565 and geo.troughH == 11 and geo.pipY == 2)
+  w.env.EXHAUSTION_TICK_OFFSET_Y = 99
+  check("wild pip offset falls back", ns.nativeGeometry().pipY == 2)
+  check("wild geometry draws no ticks", #w.frames == 2)
+end
+do -- the bar follows native back down and parks the ticks
+  local w = newWorld()
+  loadAddon(w)
+  w.native.MainStatusTrackingBarContainer = {
+    GetWidth = function() return 1192 end,
+    GetExpectedSegments = function() return 20 end,
+  }
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = 3
+  clientLoaded(w)
+  check("wide bar seats", w.frame.size[1] == 1192 and #w.frames == 21)
+  w.native.MainStatusTrackingBarContainer = nil
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = nil
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_UPDATE_RESTING")
+  check("narrow bar reseats", w.frame.size[1] == 571 and w.bar.size[1] == 565)
+  local parked = true
+  for i = 3, 21 do parked = parked and w.frames[i].shown == false end
+  check("narrow bar parks the ticks", parked)
+end
+do -- without the divider template the ticks draw by hand
+  local w = newWorld()
+  w.failTemplate = true
+  loadAddon(w)
+  w.native.MainStatusTrackingBarContainer = {
+    GetWidth = function() return 1192 end,
+    GetExpectedSegments = function() return 20 end,
+  }
+  w.env.STATUS_BAR_SIZE_ADJUSTMENT = 3
+  clientLoaded(w)
+  check("hand ticks number nineteen", #w.frames == 21)
+  local handOk = true
+  for i = 3, 21 do
+    local d = w.frames[i]
+    handOk = handOk and d.template == nil and d.size[1] == 3 and d.size[2] == 10
+      and d.shown == true and #d.textures == 1
+      and d.textures[1].atlas == "ui-hud-experiencebar-divider"
+  end
+  check("hand ticks wear the divider atlas", handOk)
 end
 
 print("tests/run.lua: " .. passed .. " checks passed")
