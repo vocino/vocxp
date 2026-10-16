@@ -213,6 +213,7 @@ local function loadAddon(world)
     t.SetBlendMode = function(_, b) t.blend = b end
     t.SetTexCoord = function(_, l, r, tp, bt) t.texcoord = { l, r, tp, bt } end
     t.SetVertexColor = function(_, r, gg, b) t.vertex = { r, gg, b } end
+    t.SetColorTexture = function(_, r, gg, b) t.color = { r, gg, b } end
     t.SetRoundLayoutToNearestPixel = function(_, e) t.rounded = e end
     t.SetShown = function(_, s) t.shown = s end
     t.Hide = function() t.shown = false end
@@ -474,11 +475,15 @@ do
     and w.frameTex.rounded == true)
   check("animated bar needs no raw texture", w.bar.minmax == nil and w.bar.barTexture == nil)
   check("background atlas", w.bg.atlas == "UI-HUD-ExperienceBar-Background")
-  check("rested wears prediction", w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
-  check("quests wear the gain look", w.questFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction"
+  check("rested wears blue grain", w.restFill.atlas == nil
+    and w.restFill.file == "Interface\\TargetingFrame\\UI-StatusBar"
+    and w.restFill.vertex[1] == 0.3 and w.restFill.vertex[2] == 0.6
+    and w.restFill.vertex[3] == 1)
+  check("quests wear deep gold grain", w.questFill.atlas == nil
     and w.questFill.blend == nil
-    and w.questFill.vertex[1] == 0.901 and w.questFill.vertex[2] == 0.8
-    and w.questFill.vertex[3] == 0.601)
+    and w.questFill.file == "Interface\\TargetingFrame\\UI-StatusBar"
+    and w.questFill.vertex[1] == 1 and w.questFill.vertex[2] == 0.7
+    and w.questFill.vertex[3] == 0.15)
   check("quest overlay above rested", w.restFill.layer == "ARTWORK" and w.restFill.sublevel == -1
     and w.questFill.layer == "ARTWORK" and w.questFill.sublevel == 0)
   check("overlays start hidden", w.restFill.shown == false and w.questFill.shown == false)
@@ -490,8 +495,7 @@ do
     and w.frameTex.atlasSize == false and w.frameTex.size[1] == 571 and w.frameTex.size[2] == 17)
   check("pip atlas", w.pip.atlas == "UI-HUD-ExperienceBar-Frame-Pip")
   check("pip starts hidden", w.pip.shown == false)
-  check("art pins its size", w.bg.atlasSize == false and w.restFill.atlasSize == false
-    and w.questFill.atlasSize == false and w.pip.atlasSize == false)
+  check("art pins its size", w.bg.atlasSize == false and w.pip.atlasSize == false)
   check("frame movable", w.frame.movable == true)
   check("frame clamped", w.frame.clamped == true)
   check("frame drags on left button", w.frame.dragButton == "LeftButton")
@@ -523,6 +527,8 @@ do -- rested overlay reaches past progress and swaps the fill
   check("rested overlay width", close(w.restFill.width, 452))
   check("rested overlay cropped, not stretched", w.restFill.texcoord ~= nil
     and close(w.restFill.texcoord[1], 0) and close(w.restFill.texcoord[2], 0.8))
+  check("rested section reads blue", w.restFill.vertex[1] == 0.3
+    and w.restFill.vertex[2] == 0.6 and w.restFill.vertex[3] == 1)
   check("rested bar atlas", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Rested")
   check("rested flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
@@ -566,6 +572,8 @@ do -- quest overlay spans from progress to the turn-in reach
   check("quest overlay width", close(w.questFill.width, 169.5))
   check("quest overlay cropped to its span", w.questFill.texcoord ~= nil
     and close(w.questFill.texcoord[1], 0.5) and close(w.questFill.texcoord[2], 0.8))
+  check("quest section reads deep gold", w.questFill.vertex[1] == 1
+    and w.questFill.vertex[2] == 0.7 and w.questFill.vertex[3] == 0.15)
   hover(w)
   check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
 end
@@ -653,8 +661,11 @@ do -- missing atlases hide their layers, never the bar
   xpEvent(w)
   check("no-atlas bg hidden", w.bg.shown == false)
   check("no-atlas frame hidden", w.frameTex.shown == false)
-  check("no-atlas overlays hidden", w.restFill.shown == false
-    and w.questFill.shown == false and w.pip.shown == false)
+  check("no-atlas hides pip", w.pip.shown == false)
+  -- File-texture overlays need no atlas art: rested still paints, and the
+  -- quest layer stays hidden only because this world has no turn-ins.
+  check("no-atlas keeps grain overlays", w.restFill.shown == true
+    and w.questFill.shown == false)
   check("no-atlas bar paints", w.bar.value == 500 and w.label.text == "10  500/1k (50%)")
 end
 
