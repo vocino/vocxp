@@ -1,0 +1,61 @@
+{
+  "addonRoot": true,
+  "flavors": [
+    "retail",
+    "forever"
+  ],
+  "ignore": [
+    ".reference/**"
+  ],
+  "globals": {
+    "read": [
+      "C_AddOns",
+      "C_GossipInfo",
+      "C_MajorFactions",
+      "C_Reputation",
+      "C_PaperDollInfo",
+      "C_PvP",
+      "C_QuestLog",
+      "C_Timer",
+      "C_UnitAuras",
+      "CreateFrame",
+      "EventRegistry",
+      "GameTooltip",
+      "GetInventoryItemQuality",
+      "GetQuestLogRewardXP",
+      "GetTime",
+      "GetXPExhaustion",
+      "IsInInstance",
+      "IsXPUserDisabled",
+      "Settings",
+      "StatusTrackingBarManager",
+      "UIParent",
+      "UnitGUID",
+      "UnitLevel",
+      "UnitXP",
+      "UnitXPMax",
+      "strtrim",
+      "MAX_REPUTATION_REACTION",
+      "STATUS_BAR_CONTAINER_WIDTH",
+      "STATUS_BAR_NUM_SEGMENTS",
+      "STATUS_BAR_SIZE_ADJUSTMENT",
+      "EXHAUSTION_TICK_OFFSET_Y",
+      "GetMaxLevelForLatestExpansion",
+      "GetMaxLevelForPlayerExpansion",
+      "GetMaxPlayerLevel",
+      "PlayerIsTimerunning",
+      "IsTrialAccount",
+      "PlaySound",
+      "SOUNDKIT"
+    ],
+    "write": [
+      "VocXPDB",
+      "SLASH_VOCXP1",
+      "SLASH_VOCXP2",
+      "SlashCmdList",
+      "VocXP_CompartmentClick",
+      "VocXP_CompartmentEnter",
+      "VocXP_CompartmentLeave"
+    ]
+  }
+}
