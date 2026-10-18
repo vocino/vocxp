@@ -374,6 +374,9 @@ frame:EnableMouse(true) -- hover tooltip always; lock gates dragging, not lookin
 -- level-up flash, ding wrap); a client without it gets a plain bar.
 local barOk, animatedBar = pcall(CreateFrame, "StatusBar", nil, frame,
   "GradualAnimatedStatusBarTemplate")
+-- Animated when the template exists (its mixin methods are
+-- presence-gated at every use); a plain StatusBar otherwise.
+---@type StatusBar&GradualAnimatedStatusBarMixin
 local bar = (barOk and animatedBar) or CreateFrame("StatusBar", nil, frame)
 local hasAnimatedBar = barOk and animatedBar ~= nil
 -- InitializeBars seats the trough at (1, -1) of the container,
