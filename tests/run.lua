@@ -103,6 +103,9 @@ local function loadAddon(world)
     for _, f in ipairs(world.factions) do
       if f.id == id then return factionRow(f) end
     end
+    for _, f in ipairs(world.collapsed) do
+      if f.id == id then return factionRow(f) end
+    end
     return nil
   end
   g.C_Reputation = {
@@ -324,7 +327,7 @@ local function newWorld()
            factions = {}, watchedID = nil, isMajor = {}, paragon = {},
            playerMaxLevel = 90, expansionMaxLevel = 90, latestMaxLevel = 90,
            timerunning = false, trial = false,
-           major = {}, friendship = {},
+           major = {}, friendship = {}, collapsed = {},
            inInstance = false, auras = {},
            addonInterfaceVersion = 120105,
            quests = {}, ready = {}, questReward = {}, selectedQuest = 0, selectLog = {},
@@ -402,6 +405,13 @@ end
 
 local function repEvent(w)
   w.frame.scripts.OnEvent(w.frame, "UPDATE_FACTION")
+end
+
+local function standingEvent(w, id, standing)
+  w.frame.scripts.OnEvent(w.frame, "FACTION_STANDING_CHANGED", id, standing)
+end
+local function renownEvent(w, id)
+  w.frame.scripts.OnEvent(w.frame, "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", id, 8, 7)
 end
 
 local function maxLevelEvent(w)
@@ -780,7 +790,8 @@ do -- watched faction takes the bar with its rank context
     and w.printed[2] == "|cff66ccffVocXP|r: the default XP bar hides while VocXP shows (/vxp config to change it)")
   check("rep mode keeps ticker", #w.tickers == 1)
   check("rep events registered", w.frame.events.UPDATE_FACTION == true
-    and w.frame.events.MAJOR_FACTION_RENOWN_LEVEL_CHANGED == true)
+    and w.frame.events.MAJOR_FACTION_RENOWN_LEVEL_CHANGED == true
+    and w.frame.events.FACTION_STANDING_CHANGED == true)
   check("xp events unregistered", w.frame.events.PLAYER_XP_UPDATE == nil
     and w.frame.events.QUEST_LOG_UPDATE == nil and w.frame.events.UPDATE_EXHAUSTION == nil)
   check("rep aura stays", w.frame.events.UNIT_AURA == true)
@@ -1984,7 +1995,7 @@ end
 local dormantEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "UNIT_AURA",
   "PLAYER_EQUIPMENT_CHANGED", "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
   "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE",
-  "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" }
+  "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", "FACTION_STANDING_CHANGED" }
 do -- repMode off at cap: fully dormant, native bar back
   local w = newWorld()
   capWorld(w)
@@ -3150,6 +3161,73 @@ do -- toggling followLatest live switches immediately
   ns.db.followLatest = false
   w.settingCallbacks["VocXP_followLatest"]()
   check("toggle off restores watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+end
+
+-- 41b. FACTION_STANDING_CHANGED names its gainer outright.
+do -- a gain the index scan cannot see still follows (collapsed rows)
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+  })
+  w.collapsed = {
+    { id = 303, name = "Soridormi", reaction = 5, lo = 0, hi = 8400, standing = 100 },
+  }
+  w.watchedID = 101
+  w.savedVars = { followLatest = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("collapsed starts watched", ns.repTracked() == 101)
+  w.collapsed[1].standing = 101
+  standingEvent(w, 303, 101)
+  check("collapsed gain follows", ns.repTracked() == 303 and ns.repFollowingWatched() == false)
+  check("collapsed gain repaints", w.label.text == "Soridormi  101/8k (1%)")
+end
+do -- a visible gain arriving only as a payload follows too
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  w.savedVars = { followLatest = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  standingEvent(w, 202, 8001)
+  check("payload gain follows", ns.repTracked() == 202 and ns.repFollowingWatched() == false)
+  check("payload gain repaints", w.label.text == "Wardens  2k/6k (33%)")
+end
+do -- a payload loss resyncs but never steals tracking
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 6000, hi = 12000, standing = 8000 },
+  })
+  w.watchedID = 101
+  w.savedVars = { followLatest = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.factions[2].standing = 7000
+  standingEvent(w, 202, 7000)
+  check("payload loss keeps watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+end
+do -- a renown level-up follows via its own payload
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, {
+    { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 301, name = "Accord", reaction = 5, lo = 0, hi = 2500, standing = 100 },
+  })
+  w.watchedID = 101
+  w.isMajor[301] = true
+  w.major[301] = { level = 7, threshold = 2500, hasMax = false }
+  w.savedVars = { followLatest = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  renownEvent(w, 301)
+  check("renown payload follows", ns.repTracked() == 301 and ns.repFollowingWatched() == false)
 end
 
 -- 42. Native geometry: the bar wears the live native size and segments.

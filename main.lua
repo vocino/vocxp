@@ -1233,8 +1233,10 @@ end
 -- Renown rows compare currentStanding like the native watch bar.
 -- Decreases only resync the cache: a loss never steals tracking.
 -- Collapsed headers hide their children from the index list, so a
--- collapsed faction's gains never surface here; the watched and
--- persisted paths use ByID and never depend on the scan.
+-- collapsed faction gains never surface here; its
+-- FACTION_STANDING_CHANGED payload (noted in onRep) covers
+-- collapsed rows; the watched and persisted paths use ByID and
+-- never depend on the scan.
 local function scanStanding(R, id, standing)
   if type(R.IsFactionParagonForCurrentPlayer) == "function"
       and type(R.GetFactionParagonInfo) == "function"
@@ -1654,7 +1656,7 @@ local ticker
 local xpEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "PLAYER_EQUIPMENT_CHANGED",
   "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
   "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE" }
-local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" }
+local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", "FACTION_STANDING_CHANGED" }
 
 local function setEvents(list, on)
   for _, e in ipairs(list) do
@@ -1770,7 +1772,54 @@ end
 -- re-resolve (following it when nothing is watched), then reconstruct
 -- at most one award for the tracked faction from its baseline delta,
 -- exactly like the XP path.
-local function onRep()
+-- The index scan cannot see collapsed rows, so a gain there never
+-- surfaces as a latest gainer (the bar keeps the old faction while
+-- chat announces the new one). FACTION_STANDING_CHANGED carries the
+-- gainer faction ID outright, ByID-readable whatever the headers do,
+-- so the payload is the primary signal and the scan stays the
+-- fallback for UPDATE_FACTION, which carries none.
+--
+-- Paragon lifetime values and friendship standings live outside
+-- FactionData.currentStanding (readRepProgress never sources them
+-- there), so the payload standing only compares for
+-- standard/renown rows; anything else follows when readable.
+local function notePayloadGain(factionID, updatedStanding)
+  if type(factionID) ~= "number" then return end
+  local special = false
+  if type(C_Reputation) == "table"
+      and type(C_Reputation.IsFactionParagonForCurrentPlayer) == "function"
+      and C_Reputation.IsFactionParagonForCurrentPlayer(factionID) then
+    special = true
+  end
+  if not special and type(C_GossipInfo) == "table"
+      and type(C_GossipInfo.GetFriendshipReputation) == "function" then
+    local repInfo = C_GossipInfo.GetFriendshipReputation(factionID)
+    if type(repInfo) == "table" and type(repInfo.friendshipFactionID) == "number"
+        and repInfo.friendshipFactionID > 0 then
+      special = true
+    end
+  end
+  if not special and type(repCache[factionID]) == "number"
+      and type(updatedStanding) == "number"
+      and updatedStanding <= repCache[factionID] then
+    -- A loss or a no-op resyncs the cache like the scan: it never
+    -- steals tracking.
+    repCache[factionID] = updatedStanding
+    return
+  end
+  -- First sighting (a collapsed row has no cache entry) follows: the
+  -- resolver revalidates readability, so a dead row never sticks.
+  ns.noteRepGain(factionID)
+end
+
+local function onRep(gainedID, updatedStanding, renownLevel)
+  if renownLevel then
+    -- A renown level-up is a gain by definition: the in-level
+    -- standing resets low and reads as a loss to standing compares.
+    ns.noteRepGain(gainedID)
+  else
+    notePayloadGain(gainedID, updatedStanding)
+  end
   ns.noteRepGain(ns.scanRepGains())
   if ns.maybeSwitchRep() then
     refresh()
@@ -1873,7 +1922,7 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_MAX_LEVEL_UPDATE")
-frame:SetScript("OnEvent", function(_, event, arg1)
+frame:SetScript("OnEvent", function(_, event, arg1, arg2)
   if event == "ADDON_LOADED" then
     -- The client replaces the SavedVariables global with the loaded
     -- table after our file ran, so rebind or settings never persist.
@@ -1934,8 +1983,12 @@ frame:SetScript("OnEvent", function(_, event, arg1)
       if arg1 ~= "player" then return end
     elseif event == "PLAYER_XP_UPDATE" then
       onXP()
-    elseif event == "UPDATE_FACTION" or event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
+    elseif event == "UPDATE_FACTION" then
       onRep()
+    elseif event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
+      onRep(arg1, nil, true)
+    elseif event == "FACTION_STANDING_CHANGED" then
+      onRep(arg1, arg2, false)
     elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN"
         or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED"
         or event == "QUEST_COMPLETE" then
