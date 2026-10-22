@@ -28,7 +28,7 @@ read_globals = {
   "C_PaperDollInfo", "C_PvP", "C_QuestLog", "C_Timer", "C_UnitAuras",
   "CreateFrame", "EventRegistry", "GameTooltip", "GetInventoryItemQuality",
   "GetQuestLogRewardXP", "GetTime", "GetXPExhaustion",
-  "IsInInstance", "IsXPUserDisabled",
+  "InCombatLockdown", "IsInInstance", "IsXPUserDisabled",
   "Settings", "StatusTrackingBarManager", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   "MAX_REPUTATION_REACTION", -- standing ceiling, Blizzard's ReputationFrame (live + forever)
