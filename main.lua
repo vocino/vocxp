@@ -2047,10 +2047,12 @@ end
 
 -- Addon compartment (FAMILY.md "Addon compartment"): the toc names
 -- these three globals; Blizzard's compartment menu calls them with
--- (addonName, button). Click does what the bare slash does; hover
--- follows the tooltip contract: gold title, one line, the slash hint.
-function VocXP_CompartmentClick()
-  ns.toggle()
+-- (addonName, button). Left and middle toggle like the bare slash;
+-- right opens Settings; any click in combat no-ops. Hover keeps
+-- the tooltip contract: gold title, one line, the slash hint.
+function VocXP_CompartmentClick(_, button)
+  if type(InCombatLockdown) == "function" and InCombatLockdown() then return end
+  if button == "RightButton" then ns.openConfig() else ns.toggle() end
 end
 
 function VocXP_CompartmentEnter(_, button)
