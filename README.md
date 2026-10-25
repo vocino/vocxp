@@ -156,6 +156,10 @@ lua tests/run.lua
 luacheck .
 ```
 
+## Support
+
+Bugs, questions, and suggestions go in the [VocXP support thread](https://discord.com/channels/101033046475546624/1563993438452457502) on Discord. That thread is the main place for support.
+
 ## License
 
 MIT
