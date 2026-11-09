@@ -848,7 +848,7 @@ do -- watched faction takes the bar with its rank context
   check("rep overlays off", w.restFill.shown == false and w.questFill.shown == false
     and w.pip.shown == false)
   hover(w)
-  check("rep tooltip collects", tiptexts(w)[1] == "Collecting data")
+  check("rep tooltip collects", w.gametip.title == "Collecting data")
   check("rep tooltip rank", tiphas(w, "Court: Honored · 33% to Revered"))
 end
 do -- nothing tracked: guidance instead of a blank bar
@@ -861,8 +861,8 @@ do -- nothing tracked: guidance instead of a blank bar
   check("untracked label", w.label.text == "No faction tracked")
   check("untracked bar empty", w.bar.value == 0)
   hover(w)
-  check("untracked tooltip", tiptexts(w)[1] == "No reputation tracked"
-    and tiptexts(w)[2] == "Watch a faction to track it")
+  check("untracked tooltip", w.gametip.title == "No reputation tracked"
+    and tiptexts(w)[1] == "Watch a faction to track it")
 end
 do -- cap raised later: next login wakes XP back up
   local w = newWorld()
@@ -1028,7 +1028,7 @@ do -- every quest event rescans and repaints
   check("removal clears", w.questFill.shown == false)
 end
 
--- 8. Tooltip: gold title, rate, status, bonuses, gaps. No slash hint:
+-- 8. Tooltip: gold rate title, status, bonuses, gaps. No slash hint:
 -- the bar tooltip reports, it does not advertise.
 do
   local w = newWorld()
@@ -1037,9 +1037,9 @@ do
   hover(w)
   check("tooltip anchors above the bar", w.gametip.owner == w.frame
     and w.gametip.anchor == "ANCHOR_TOP" and w.gametip.shown == true)
-  check("tooltip title is gold", w.gametip.title == "VocXP" and sameColor(w.gametip.titleColor, GOLD_C))
+  check("tooltip title is gold", w.gametip.title == "Collecting data" and sameColor(w.gametip.titleColor, GOLD_C))
   local lines = tiptexts(w)
-  check("tooltip rate first", lines[1] == "Collecting data" and lines[2] == "Collecting data")
+  check("tooltip rate first", w.gametip.title == "Collecting data" and lines[1] == "Collecting data")
   check("tooltip ends on the gap", lines[#lines] == "Well Fed · kill XP (eat food)")
 end
 do -- full stack orders every section
@@ -1052,8 +1052,8 @@ do -- full stack orders every section
   setQuests(w, { { id = 11, xp = 100, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   hover(w)
+  check("tooltip order title", w.gametip.title == "0 XP/hr")
   check("tooltip order", table.concat(tiptexts(w), "|") == table.concat({
-    "0 XP/hr",
     "Warming up · last 1m of 10m",
     "Rested: |cFF4D99FF50%|r of level",
     "1 quest ready: |cFFFFD65210%|r of level",
@@ -1070,7 +1070,7 @@ do -- bonus and gap colors
   hover(w)
   check("no-bonus red", sameColor(tipcolor(w, "No XP bonus"), RED_C))
   check("gap muted", sameColor(tipcolor(w, "Well Fed · kill XP (eat food)"), MUTED_C))
-  local sub = w.gametip.lines[2]
+  local sub = w.gametip.lines[1]
   check("sub muted", sub.text == "Collecting data"
     and sameColor({ sub.r, sub.g, sub.b }, MUTED_C))
 end
@@ -1241,8 +1241,8 @@ do -- XP gain accumulates into the session rate
   xpEvent(w)
   hover(w)
   local lines = tiptexts(w)
-  check("rate line", lines[1] == "3k XP/hr · 15m")
-  check("rate sub", lines[2] == "Last 10m")
+  check("rate line", w.gametip.title == "3k XP/hr · 15m")
+  check("rate sub", lines[1] == "Last 10m")
   check("rate no-bonus", tiphas(w, "No XP bonus"))
   check("bar tracks xp", w.bar.value == 500)
 end
@@ -1255,7 +1255,7 @@ do -- level-up carries the remainder across the bar
   w.now = w.now + 3600
   xpEvent(w)
   hover(w)
-  check("level-up carries", tiptexts(w)[1] == "1k XP/hr · 2h23m")
+  check("level-up carries", w.gametip.title == "1k XP/hr · 2h23m")
   check("bar shows new level", w.label.text == "11  100/2k (5%)")
 end
 do -- /vxp reset zeroes the session
@@ -1269,13 +1269,13 @@ do -- /vxp reset zeroes the session
   w.now = w.now + 100
   w.env.SlashCmdList.VOCXP("reset")
   hover(w)
-  check("reset collects", tiptexts(w)[1] == "Collecting data")
+  check("reset collects", w.gametip.title == "Collecting data")
   check("reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset")
   w.now = w.now + 60
   w.xp = 6000
   xpEvent(w)
   hover(w)
-  check("reset clears history", tiptexts(w)[1] == "60k XP/hr · 1h34m")
+  check("reset clears history", w.gametip.title == "60k XP/hr · 1h34m")
 end
 do -- /vxp pause freezes the display; resume restarts the gate
   local w = newWorld()
@@ -1287,22 +1287,22 @@ do -- /vxp pause freezes the display; resume restarts the gate
   xpEvent(w)
   slash("pause")
   hover(w)
-  check("pause display", tiptexts(w)[1] == "Paused" and tiptexts(w)[2] == "Tracking paused")
+  check("pause display", w.gametip.title == "Paused" and tiptexts(w)[1] == "Tracking paused")
   check("pause announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused")
   w.now = w.now + 60
   w.xp = 600
   xpEvent(w)
   hover(w)
-  check("pause ignores awards", tiptexts(w)[1] == "Paused")
+  check("pause ignores awards", w.gametip.title == "Paused")
   slash("pause")
   hover(w)
-  check("resume collects", tiptexts(w)[1] == "Collecting data")
+  check("resume collects", w.gametip.title == "Collecting data")
   check("resume announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed")
   w.now = w.now + 60
   w.xp = 900
   xpEvent(w)
   hover(w)
-  check("resume no backfill", tiptexts(w)[1] == "18k XP/hr · <1m")
+  check("resume no backfill", w.gametip.title == "18k XP/hr · <1m")
 end
 
 -- 13. The ticker refreshes the rate between XP events.
@@ -1316,21 +1316,21 @@ do
   w.xp = 3600
   xpEvent(w)
   hover(w)
-  check("early gain collects", tiptexts(w)[1] == "1.3m XP/hr" and tiptexts(w)[2] == "Collecting data")
+  check("early gain collects", w.gametip.title == "1.3m XP/hr" and tiptexts(w)[1] == "Collecting data")
   w.now = w.now + 290
   w.tickers[1].fn()
   hover(w)
-  check("ticker holds window", tiptexts(w)[1] == "43k XP/hr · 2h14m")
-  check("ticker sub", tiptexts(w)[2] == "Warming up · last 5m of 10m")
+  check("ticker holds window", w.gametip.title == "43k XP/hr · 2h14m")
+  check("ticker sub", tiptexts(w)[1] == "Warming up · last 5m of 10m")
   w.now = w.now + 11
   w.tickers[1].fn()
   hover(w)
-  check("ticker warming rate", tiptexts(w)[1] == "42k XP/hr · 2h19m")
+  check("ticker warming rate", w.gametip.title == "42k XP/hr · 2h19m")
   w.now = w.now + 300
   w.tickers[1].fn()
   hover(w)
-  check("ticker expires award", tiptexts(w)[1] == "0 XP/hr")
-  check("expired sub", tiptexts(w)[2] == "No XP in the last 10m")
+  check("ticker expires award", w.gametip.title == "0 XP/hr")
+  check("expired sub", tiptexts(w)[1] == "No XP in the last 10m")
 end
 
 -- 14. Slash toggles confirm with sounds: open/close for the bar,
@@ -1384,7 +1384,7 @@ local function missinglines(w)
   -- Muted lines below the status line are the gaps (or the watched line).
   local texts = tiptexts(w)
   local out = {}
-  for i = 3, #texts do
+  for i = 2, #texts do
     local l = w.gametip.lines[i]
     if sameColor({ l.r, l.g, l.b }, MUTED_C) then out[#out + 1] = l.text end
   end
@@ -1483,7 +1483,7 @@ do -- aura changes refresh the tooltip
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
   hover(w)
   check("no aura yet", tiphas(w, "No XP bonus"))
-  check("partial seconds sub", tiptexts(w)[2] == "Warming up · last 45s of 10m")
+  check("partial seconds sub", tiptexts(w)[1] == "Warming up · last 45s of 10m")
   w.aurasByName["Well Fed"] = {}
   w.native.shown = true -- simulated Edit Mode reshow
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
@@ -1903,7 +1903,7 @@ do -- same-level gain becomes a timestamped award
   w.xp = 300
   xpEvent(w)
   hover(w)
-  check("live rate", tiptexts(w)[1] == "18k XP/hr · 3m")
+  check("live rate", w.gametip.title == "18k XP/hr · 3m")
 end
 do -- level-up keeps history and snapshots the new level atomically
   local w = newWorld()
@@ -1914,7 +1914,7 @@ do -- level-up keeps history and snapshots the new level atomically
   w.xp, w.max, w.level = 100, 2000, 11
   xpEvent(w)
   hover(w)
-  check("ding rate", tiptexts(w)[1] == "6k XP/hr · 19m")
+  check("ding rate", w.gametip.title == "6k XP/hr · 19m")
 end
 do -- PLAYER_LEVEL_UP refreshes but never adds an award
   local w = newWorld()
@@ -1925,10 +1925,10 @@ do -- PLAYER_LEVEL_UP refreshes but never adds an award
   w.xp = 300
   xpEvent(w)
   hover(w)
-  local line = tiptexts(w)[1]
+  local line = w.gametip.title
   levelEvent(w)
   hover(w)
-  check("level adds nothing", tiptexts(w)[1] == line)
+  check("level adds nothing", w.gametip.title == line)
 end
 do -- multi-level jump is unmeasurable: no invented gain
   local w = newWorld()
@@ -1938,7 +1938,7 @@ do -- multi-level jump is unmeasurable: no invented gain
   w.level, w.xp, w.max = 12, 50, 3000
   xpEvent(w)
   hover(w)
-  check("jump silent", tiptexts(w)[1] == "0 XP/hr")
+  check("jump silent", w.gametip.title == "0 XP/hr")
 end
 do -- negative same-level delta resyncs, never a negative award
   local w = newWorld()
@@ -1949,12 +1949,12 @@ do -- negative same-level delta resyncs, never a negative award
   w.xp = 400
   xpEvent(w)
   hover(w)
-  check("negative silent", tiptexts(w)[1] == "0 XP/hr")
+  check("negative silent", w.gametip.title == "0 XP/hr")
   w.now = w.now + 60
   w.xp = 500
   xpEvent(w)
   hover(w)
-  check("resync rate", tiptexts(w)[1] == "3k XP/hr · 10m")
+  check("resync rate", w.gametip.title == "3k XP/hr · 10m")
 end
 do -- zone load keeps history; character switch clears it
   local w = newWorld()
@@ -1966,12 +1966,12 @@ do -- zone load keeps history; character switch clears it
   w.now = w.now + 30
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   hover(w)
-  check("zone keeps history", tiptexts(w)[1] == "12k XP/hr · 4m")
+  check("zone keeps history", w.gametip.title == "12k XP/hr · 4m")
   w.guid = "Player-11-0002"
   w.now = w.now + 5
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   hover(w)
-  check("switch clears", tiptexts(w)[1] == "Collecting data")
+  check("switch clears", w.gametip.title == "Collecting data")
 end
 
 -- 21. ETA uses a longer-memory basis than the displayed rate.
@@ -2003,8 +2003,8 @@ do -- dungeon burst: live rate spikes, ETA stays conservative
   w.xp = 60000
   xpEvent(w)
   hover(w)
-  check("burst rate spikes", tiptexts(w)[1] == "360k XP/hr · 7m")
-  check("burst sub", tiptexts(w)[2] == "Last 10m")
+  check("burst rate spikes", w.gametip.title == "360k XP/hr · 7m")
+  check("burst sub", tiptexts(w)[1] == "Last 10m")
 end
 do -- stale long-window earnings never resurrect an ETA
   local w = newWorld()
@@ -2017,8 +2017,8 @@ do -- stale long-window earnings never resurrect an ETA
   w.now = w.now + 910
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
   hover(w)
-  check("stale eta stays null", tiptexts(w)[2] == "No XP in the last 10m")
-  check("stale title zero", tiptexts(w)[1] == "0 XP/hr")
+  check("stale eta stays null", tiptexts(w)[1] == "No XP in the last 10m")
+  check("stale title zero", w.gametip.title == "0 XP/hr")
 end
 
 -- 22. Aura reads go blind in instances: the honest note replaces the list.
@@ -2054,12 +2054,12 @@ do -- 59s of quiet stays ready; 60s trips idle
   w.now = w.now + 59
   w.tickers[1].fn()
   hover(w)
-  check("quiet 59s ready", tiptexts(w)[2] == "Last 10m")
+  check("quiet 59s ready", tiptexts(w)[1] == "Last 10m")
   w.now = w.now + 1
   w.tickers[1].fn()
   hover(w)
-  check("quiet 60s idle", tiptexts(w)[2] == "Idle 1m · last 10m")
-  check("idle keeps payoff", tiptexts(w)[1] == "360k XP/hr · 7m")
+  check("quiet 60s idle", tiptexts(w)[1] == "Idle 1m · last 10m")
+  check("idle keeps payoff", w.gametip.title == "360k XP/hr · 7m")
 end
 do -- idle in a partial window still reads warming up
   local w = newWorld()
@@ -2072,8 +2072,8 @@ do -- idle in a partial window still reads warming up
   w.now = w.now + 120
   w.tickers[1].fn()
   hover(w)
-  check("warming owns partial idle", tiptexts(w)[2] == "Warming up · last 3m of 10m")
-  check("partial idle payoff", tiptexts(w)[1] == "100k XP/hr · 57m")
+  check("warming owns partial idle", tiptexts(w)[1] == "Warming up · last 3m of 10m")
+  check("partial idle payoff", w.gametip.title == "100k XP/hr · 57m")
 end
 
 -- 24. Mode transitions: dinging pivots to rep, dormancy stays
@@ -2137,7 +2137,7 @@ do -- cap raise without relog wakes XP through the cap event
   check("cap event swaps events", w.frame.events.PLAYER_XP_UPDATE == true
     and w.frame.events.UPDATE_FACTION == nil)
   hover(w)
-  check("cap event collects", tiptexts(w)[1] == "Collecting data")
+  check("cap event collects", w.gametip.title == "Collecting data")
 end
 do -- re-login after a ding keeps the one ticker
   local w = newWorld()
@@ -2158,7 +2158,7 @@ do -- re-login after a ding keeps the one ticker
   check("rewake unregisters rep", w.frame.events.UPDATE_FACTION == nil)
   check("rewake reshows", w.frame.shown == true)
   hover(w)
-  check("rewake collects", tiptexts(w)[1] == "Collecting data")
+  check("rewake collects", w.gametip.title == "Collecting data")
 end
 do -- repMode off: re-login after a ding restarts exactly one ticker
   local w = newWorld()
@@ -2722,7 +2722,7 @@ do -- losses never steal tracking, and later gains still count
   w.factions[1].standing = 15000
   repEvent(w)
   hover(w)
-  check("gains after loss count", tiptexts(w)[1] == "36k Rep/hr · 10m")
+  check("gains after loss count", w.gametip.title == "36k Rep/hr · 10m")
 end
 do -- one event with gains on two rows follows the largest
   local w = newWorld()
@@ -2800,7 +2800,7 @@ do -- maxed renown: name-only label, cap title
   check("renown maxed label", w.label.text == "Amani")
 
   hover(w)
-  check("renown maxed tooltip", tiptexts(w)[1] == "Renown 25" and tiptexts(w)[2] == "Rank complete")
+  check("renown maxed tooltip", w.gametip.title == "Renown 25" and tiptexts(w)[1] == "Rank complete")
 
 end
 do -- paragon: green cycle bar, reward line when pending
@@ -2860,7 +2860,7 @@ do -- maxed friendship: name-only label, rank title
   clientLoaded(w)
   check("friendship maxed label", w.label.text == "Valeera")
   hover(w)
-  check("friendship maxed tooltip", tiptexts(w)[1] == "Best Friend")
+  check("friendship maxed tooltip", w.gametip.title == "Best Friend")
 
 end
 do -- exalted standard: name-only label, cap title
@@ -2874,7 +2874,7 @@ do -- exalted standard: name-only label, cap title
 
 
   hover(w)
-  check("exalted tooltip", tiptexts(w)[1] == "Exalted" and tiptexts(w)[2] == "Rank complete"
+  check("exalted tooltip", w.gametip.title == "Exalted" and tiptexts(w)[1] == "Rank complete"
     and tiphas(w, "Court — Exalted"))
 end
 do -- rep paints through the plain-bar fallback too
@@ -2901,9 +2901,9 @@ do -- gains accumulate into the session rate
   w.factions[1].standing = 6500
   repEvent(w)
   hover(w)
-  check("rep rate line", tiptexts(w)[1] == "3k Rep/hr · 4h15m")
-  check("rep rate sub", tiptexts(w)[2] == "Last 10m")
-  check("rep faction line", tiptexts(w)[3] == "Court: Friendly · 6% to Honored")
+  check("rep rate line", w.gametip.title == "3k Rep/hr · 4h15m")
+  check("rep rate sub", tiptexts(w)[1] == "Last 10m")
+  check("rep faction line", tiptexts(w)[2] == "Court: Friendly · 6% to Honored")
   check("rep follow line", tiphas(w, "Following watched faction"))
 end
 do -- full tooltip order in rep mode; XP-only buffs stay out
@@ -2916,8 +2916,8 @@ do -- full tooltip order in rep mode; XP-only buffs stay out
   loadAddon(w)
   clientLoaded(w)
   hover(w)
+  check("rep tooltip order title", w.gametip.title == "Collecting data")
   check("rep tooltip order", table.concat(tiptexts(w), "|") == table.concat({
-    "Collecting data",
     "Collecting data",
     "Court: Honored · 33% to Revered",
     " ",
@@ -2962,13 +2962,13 @@ do -- pause and reset work in rep mode
   repEvent(w)
   slash("pause")
   hover(w)
-  check("rep pause display", tiptexts(w)[1] == "Paused" and tiptexts(w)[2] == "Tracking paused")
+  check("rep pause display", w.gametip.title == "Paused" and tiptexts(w)[1] == "Tracking paused")
   slash("pause")
   hover(w)
-  check("rep resume collects", tiptexts(w)[1] == "Collecting data")
+  check("rep resume collects", w.gametip.title == "Collecting data")
   slash("reset")
   hover(w)
-  check("rep reset collects", tiptexts(w)[1] == "Collecting data")
+  check("rep reset collects", w.gametip.title == "Collecting data")
   check("rep reset announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: session reset")
 end
 do -- forever rep mode recommends nothing
@@ -3036,7 +3036,7 @@ do -- zone load keeps rep history
   w.now = w.now + 30
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   hover(w)
-  check("rep zone keeps history", tiptexts(w)[1] == "12k Rep/hr · 44m")
+  check("rep zone keeps history", w.gametip.title == "12k Rep/hr · 44m")
 end
 do -- character switch in rep mode starts over
   local w = newWorld()
@@ -3052,7 +3052,7 @@ do -- character switch in rep mode starts over
   w.now = w.now + 5
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
   hover(w)
-  check("rep switch clears", tiptexts(w)[1] == "Collecting data")
+  check("rep switch clears", w.gametip.title == "Collecting data")
 end
 do -- cap event while still capped is a no-op
   local w = newWorld()
@@ -3065,10 +3065,10 @@ do -- cap event while still capped is a no-op
   w.factions[1].standing = 12300
   repEvent(w)
   hover(w)
-  local line = tiptexts(w)[1]
+  local line = w.gametip.title
   maxLevelEvent(w)
   hover(w)
-  check("capped cap-event no-op", tiptexts(w)[1] == line and w.label.text == "Court  300/9k (3%)")
+  check("capped cap-event no-op", w.gametip.title == line and w.label.text == "Court  300/9k (3%)")
 end
 
 -- 40. Cap detection is a level comparison like Blizzard's own bar:
