@@ -58,6 +58,16 @@ ns.COLORS = {
 function ns.rgb(token, alpha)
   return token[1], token[2], token[3], alpha
 end
+
+-- Hex for a token, for inline color escapes in tooltip text: the
+-- number carries the color while the words stay body text. The
+-- escape builds at runtime, so no |cff literal ever sits at a call
+-- site -- the palette file stays the single source of color.
+function ns.hex(token)
+  if type(token) ~= "table" then return "FFFFFF" end
+  return ("%02X%02X%02X"):format(math.floor(token[1] * 255 + 0.5),
+    math.floor(token[2] * 255 + 0.5), math.floor(token[3] * 255 + 0.5))
+end
 local COLORS = ns.COLORS
 
 -- Defaults: the single source of truth (FAMILY.md "Settings"). A key
@@ -755,32 +765,61 @@ function ns.clientFlavor()
   return "retail"
 end
 
--- Bonus registry: the effects that change kill-XP gain, one entry per
+-- Bonus registry: the effects that change XP gain, one entry per
 -- effect. Each entry names the effect, what it grants, and where it
--- comes from, in the player's terms, plus the aura that marks it live
--- and how to spot its granting item in the bags. Only verified effects
--- get entries: Well Fed is the first, the food buff that raises kill
--- XP. A short registry that is right beats a long one that is guessed,
--- so the retail guesses are gone outright: War Mode, Mentored, and
--- the Faire and Wickerman auras are unconfirmed on Forever (spell
--- 24705 is the stamina-regen Invocation on Era-line data, not Grim
--- Visage), and Joyous Journeys is Era-excluded by Blizzard's own
--- notice. Eating does not feed rested on Era-line data (food restores
--- health, Well Fed adds stamina and spirit, rested accrues in rest
--- areas), so no bonus touches rested; the bar's own reach lines
--- already report it.
+-- comes from, in the player's terms, plus the aura that marks it live.
+-- Entries carry the flavors they are verified on: retail and Forever
+-- genuinely differ here, so each side lists only its own confirmed
+-- effects and its own numbers.
+--
+-- Forever: the Cozy Sleeping Bag's Well-Rested buff (+1% per stack,
+-- up to +3%, on kill and quest XP) and cooked food's Well Fed (+5%
+-- kill XP only, and only foods whose tooltip promises it). The
+-- rested pool itself needs no entry -- the bar's reach lines already
+-- report it -- and neither do the Camp Tent top-up or the Legacy Well
+-- Rested perk, which feed the pool rather than paying per kill.
+--
+-- A short registry that is right beats a long one that is guessed:
+-- no War Mode, Mentored, Faire, Wickerman, or Joyous Journeys
+-- anywhere, and no Rested line: the bar already answers that.
 ns.REGISTRY = {
   {
     aura = 24870, -- one food's spell; the name read below finds every food's
     name = "Well Fed", -- every food's buff shares the name, so the name query sees them all
     label = "Well Fed",
     grant = "kill XP",
-    source = "food",
-    food = true, -- any food item grants it; the bag hint looks for food, not one item
+    hint = "eat food",
+    bagWord = "food", -- any food item grants it; the bag hint looks for food, not one item
+    flavors = { "retail" },
+  },
+  {
+    -- No spell ID confirmed on Forever: the name read below is the
+    -- only detection (spell names are client-locale, so an in-game
+    -- check against the exact buff name is the way to confirm this).
+    name = "Well Fed",
+    label = "Well Fed",
+    grant = "kill XP",
+    pct = 5, -- cooked food with the +5% kill-XP line, kills only
+    hint = "cooked food with +5% kill XP",
+    flavors = { "forever" },
+  },
+  {
+    -- The Cozy Sleeping Bag's buff, separate from normal rested XP.
+    -- Stacks read from the aura's applications count; without a
+    -- readable count the plain grant line shows instead of a number.
+    name = "Well-Rested", -- the bag buff; not the Legacy "Well Rested" perk
+    label = "Well-Rested",
+    grant = "kill and quest XP",
+    stacks = true,
+    pctPerStack = 1,
+    maxStacks = 3,
+    hint = "lie in the bag",
+    flavors = { "forever" },
   },
 }
 
 function ns.playerAura(spellID)
+  if spellID == nil then return nil end
   if type(C_UnitAuras) ~= "table" then return nil end
   if type(C_UnitAuras.GetPlayerAuraBySpellID) ~= "function" then return nil end
   return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
@@ -816,6 +855,45 @@ end
 
 function ns.hasEntryAura(entry)
   return ns.entryAura(entry) ~= nil
+end
+
+-- An entry applies on the current client when it names no flavors or
+-- names this one. Retail and Forever genuinely differ, so flavored
+-- entries never leak across.
+function ns.entryApplies(entry)
+  if type(entry) ~= "table" then return false end
+  if type(entry.flavors) ~= "table" then return true end
+  local here = ns.clientFlavor()
+  for _, flavor in ipairs(entry.flavors) do
+    if flavor == here then return true end
+  end
+  return false
+end
+
+-- Stack count for a stacking entry, clamped to its max, or nil when
+-- the aura is absent, the entry does not stack, or the count is
+-- unreadable. The count can arrive secret like the stamp below, so
+-- the same guard applies.
+function ns.entryStacks(entry)
+  if type(entry) ~= "table" or not entry.stacks then return nil end
+  local aura = ns.entryAura(entry)
+  if type(aura) ~= "table" then return nil end
+  local app = aura.applications
+  if canaccessvalue and not canaccessvalue(app) then return nil end
+  if type(app) ~= "number" or app < 1 then return nil end
+  return math.min(app, entry.maxStacks or app)
+end
+
+-- The entry's current percent, or nil when it has none to print: a
+-- fixed pct, or per-stack times the live stack count.
+local function entryPct(entry)
+  if type(entry) ~= "table" then return nil end
+  if type(entry.pct) == "number" then return entry.pct end
+  if entry.stacks and type(entry.pctPerStack) == "number" then
+    local stacks = ns.entryStacks(entry)
+    if stacks ~= nil then return entry.pctPerStack * stacks end
+  end
+  return nil
 end
 
 -- Remaining time on a live aura, in seconds, or nil when the client
@@ -939,13 +1017,13 @@ local function bonusParts()
   end
   if not ns.inInstance() then
     for _, entry in ipairs(ns.REGISTRY) do
-      if ns.hasEntryAura(entry) then
+      if ns.entryApplies(entry) and ns.hasEntryAura(entry) then
+        local pct = entryPct(entry)
         local left = ns.entryTimeLeft(entry)
-        if left then
-          add(nil, entry.label .. " · " .. entry.grant .. " (" .. ns.formatEta(left) .. " left)")
-        else
-          add(nil, entry.label .. " · " .. entry.grant)
-        end
+        local head = entry.label .. " · " .. entry.grant
+        if pct then head = "+" .. pct .. "% " .. entry.label end
+        if left then head = head .. " (" .. ns.formatEta(left) .. " left)" end
+        add(pct, head)
       end
     end
   end
@@ -984,13 +1062,13 @@ local function missingParts()
   end
   local bagged = nil
   for _, entry in ipairs(ns.REGISTRY) do
-    if not ns.hasEntryAura(entry) then
-      local hint = "eat " .. entry.source
-      if entry.food then
+    if ns.entryApplies(entry) and not ns.hasEntryAura(entry) then
+      local hint = entry.hint
+      if entry.bagWord then
         if bagged == nil then bagged = ns.foodInBags() end
-        if bagged then hint = entry.source .. " in bags" end
+        if bagged then hint = entry.bagWord .. " in bags" end
       end
-      add(nil, entry.label .. " · " .. entry.grant .. " (" .. hint .. ")")
+      add(entry.pct, entry.label .. " · " .. entry.grant .. " (" .. hint .. ")")
     end
   end
   sortByValue(parts)
@@ -1717,6 +1795,8 @@ function ns.showRepTip()
         COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
     end
   end
+  GameTooltip:AddLine(" ", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  GameTooltip:AddLine("Bonuses", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   local bonuses = bonusParts()
   if #bonuses == 0 then
     GameTooltip:AddLine("No rep bonus", COLORS.red[1], COLORS.red[2], COLORS.red[3], true)
@@ -1732,8 +1812,6 @@ function ns.showRepTip()
     GameTooltip:AddLine(repWatching and "Following watched faction" or "Following latest gains",
       COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   end
-  GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
-    COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   GameTooltip:Show()
 end
 
@@ -1757,16 +1835,23 @@ function ns.showTip()
   if seg then
     if seg.hasRested and seg.restedPct >= 0.5 then
       local pct = math.floor(seg.restedPct + 0.5)
-      GameTooltip:AddLine(("Rested: %d%% of level"):format(pct),
-        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+      local num = "|cFF" .. ns.hex(COLORS.rest) .. pct .. "%|r"
+      GameTooltip:AddDoubleLine("Rested:", num .. " of level",
+        COLORS.text[1], COLORS.text[2], COLORS.text[3],
+        COLORS.text[1], COLORS.text[2], COLORS.text[3])
     end
     if questCount > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 then
       local pct = math.floor(seg.questPct + 0.5)
       local noun = questCount == 1 and "quest" or "quests"
-      GameTooltip:AddLine(("%d %s ready: %d%% of level"):format(questCount, noun, pct),
-        COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+      local num = "|cFF" .. ns.hex(COLORS.quest) .. pct .. "%|r"
+      GameTooltip:AddDoubleLine(("%d %s ready:"):format(questCount, noun), num .. " of level",
+        COLORS.text[1], COLORS.text[2], COLORS.text[3],
+        COLORS.text[1], COLORS.text[2], COLORS.text[3])
     end
   end
+  -- Air between the readout and the bonus section, the way native
+  -- tooltips group: title block, stats block, gold header, lines.
+  GameTooltip:AddLine(" ", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine("Bonuses", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   local bonuses = bonusParts()
   if #bonuses == 0 then
@@ -1779,8 +1864,6 @@ function ns.showTip()
   for _, m in ipairs(missingParts()) do
     GameTooltip:AddLine(m, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   end
-  GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
-    COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   GameTooltip:Show()
 end
 

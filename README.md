@@ -51,16 +51,18 @@ bonus you are missing and how to get it:
 Well Fed · kill XP (10m left)
 ```
 
-Bonuses read live from a short verified-only registry: Well Fed,
-the food buff that raises kill XP. Every food grants its own Well Fed
-spell, so the entry matches by name first (with the spell ID as the
-locale-proof fallback) and carries its remaining time when the client
-reports one. Missing it, the gap names the fix (`Well Fed · kill XP
-(eat food)`, or `food in bags` when food sits in your bags). No bonus,
-no mystery: it says "No XP bonus" so you know to fix it. A short
-registry that is right beats a long one that is guessed, so unverified
-event and mode buffs have no entry at all; rested needs none either,
-since the bar's own reach lines already report it.
+Bonuses read live from a short verified-only registry, one entry per
+effect, each listing only the clients it is confirmed on with its own
+numbers. On retail that is Well Fed, the food buff that raises kill
+XP: every food grants its own Well Fed spell, so the entry matches by
+name first (with the spell ID as the locale-proof fallback) and
+carries its remaining time when the client reports one. Missing it,
+the gap names the fix (`Well Fed · kill XP (eat food)`, or `food in
+bags` when food sits in your bags). No bonus, no mystery: it says "No
+XP bonus" so you know to fix it. A short registry that is right beats
+a long one that is guessed, so unverified event and mode buffs have no
+entry at all; rested needs none either, since the bar's own reach
+lines already report it.
 
 ```
 /vxp           show or hide the bar
@@ -76,10 +78,16 @@ In dungeons and other instances the game hides world-granted
 auras from addons, so the bonus scan pauses there with an honest note
 instead of pretending your buffs expired.
 
-On World of Warcraft Forever the registry reads the same: the name
-query, the ID fallback, the remaining time, and the bag hint are all
-verified on both clients. The bar, rate, and forecast work the same
-on both clients. Reputation mode works there too.
+On World of Warcraft Forever the registry lists that client's two
+confirmed effects: the Cozy Sleeping Bag's Well-Rested (+1% per
+stack, up to +3%, on kill and quest XP) and cooked food's Well Fed
+(+5% kill XP only, and only foods whose tooltip promises it -- the gap
+names the qualifier instead of assuming every food qualifies, so there
+is no food-in-bags shortcut there). The rested pool itself needs no
+line: the bar's reach lines already report it, and the Camp Tent
+top-up and the Legacy Well Rested perk feed the pool rather than
+paying per kill. The bar, rate, and forecast work the same on both
+clients. Reputation mode works there too.
 Reputation bonuses at max level keep the list they already had.
 
 At max level the bar pivots to reputation automatically: it follows

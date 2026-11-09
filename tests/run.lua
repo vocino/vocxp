@@ -182,6 +182,12 @@ local function loadAddon(world)
     AddLine = function(_, t, r, gg, b)
       world.gametip.lines[#world.gametip.lines + 1] = { text = t, r = r, g = gg, b = b }
     end,
+    AddDoubleLine = function(_, l, r, lr, lg, lb, rr, rg, rb)
+      world.gametip.lines[#world.gametip.lines + 1] = {
+        text = l .. " " .. r, left = l, right = r, double = true,
+        r = lr, g = lg, b = lb, rr = rr, rg = rg, rb = rb,
+      }
+    end,
     Show = function() world.gametip.shown = true end,
     Hide = function() world.gametip.shown = false end,
   }
@@ -542,7 +548,7 @@ do -- rested overlay reaches past progress and swaps the fill
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
   check("pip rides rested", w.pip.shown == true and close(w.pip.points[1][4], 452))
   hover(w)
-  check("tooltip rested line", tiphas(w, "Rested: 30% of level"))
+  check("tooltip rested line", tiphas(w, "Rested: |cFF4D99FF30%|r of level"))
 end
 do -- exhaustion events repaint the rested layer
   local w = newWorld()
@@ -584,7 +590,7 @@ do -- quest overlay spans from progress to the turn-in reach
   check("quest section reads deep gold", w.questFill.vertex[1] == 1
     and w.questFill.vertex[2] == 0.84 and w.questFill.vertex[3] == 0.32)
   hover(w)
-  check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
+  check("tooltip quest line", tiphas(w, "2 quests ready: |cFFFFD65230%|r of level"))
 end
 do -- rested stacks beyond quest: the pip marks true runout past turn-ins
   local w = newWorld()
@@ -606,7 +612,7 @@ do -- one quest reads singular
   setQuests(w, { { id = 11, xp = 1000, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   hover(w)
-  check("tooltip one quest", tiphas(w, "1 quest ready: 100% of level"))
+  check("tooltip one quest", tiphas(w, "1 quest ready: |cFFFFD652100%|r of level"))
 end
 do -- rested overflow follows the native rule
   local w = newWorld()
@@ -1022,7 +1028,8 @@ do -- every quest event rescans and repaints
   check("removal clears", w.questFill.shown == false)
 end
 
--- 8. Tooltip: gold title, rate, status, bonuses, gaps, slash hint.
+-- 8. Tooltip: gold title, rate, status, bonuses, gaps. No slash hint:
+-- the bar tooltip reports, it does not advertise.
 do
   local w = newWorld()
   loadAddon(w)
@@ -1033,7 +1040,7 @@ do
   check("tooltip title is gold", w.gametip.title == "VocXP" and sameColor(w.gametip.titleColor, GOLD_C))
   local lines = tiptexts(w)
   check("tooltip rate first", lines[1] == "Collecting data" and lines[2] == "Collecting data")
-  check("tooltip teaches the slash", lines[#lines]:find("/vxp", 1, true) ~= nil)
+  check("tooltip ends on the gap", lines[#lines] == "Well Fed · kill XP (eat food)")
 end
 do -- full stack orders every section
   local w = newWorld()
@@ -1048,12 +1055,12 @@ do -- full stack orders every section
   check("tooltip order", table.concat(tiptexts(w), "|") == table.concat({
     "0 XP/hr",
     "Warming up · last 1m of 10m",
-    "Rested: 50% of level",
-    "1 quest ready: 10% of level",
+    "Rested: |cFF4D99FF50%|r of level",
+    "1 quest ready: |cFFFFD65210%|r of level",
+    " ",
     "Bonuses",
     "No XP bonus",
     "Well Fed · kill XP (eat food)",
-    "/vxp shows or hides it. /vxp help lists the rest.",
   }, "|"))
 end
 do -- bonus and gap colors
@@ -1066,6 +1073,33 @@ do -- bonus and gap colors
   local sub = w.gametip.lines[2]
   check("sub muted", sub.text == "Collecting data"
     and sameColor({ sub.r, sub.g, sub.b }, MUTED_C))
+end
+do -- reach stats ride double lines with inline-colored values
+  local w = newWorld()
+  w.restedXp = 300
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  setQuests(w, { { id = 11, xp = 100, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  hover(w)
+  local reach, quest = nil, nil
+  for _, l in ipairs(w.gametip.lines) do
+    if l.double and l.left == "Rested:" then reach = l end
+    if l.double and l.left == "1 quest ready:" then quest = l end
+  end
+  check("rested rides a double", reach ~= nil and reach.right == "|cFF4D99FF30%|r of level")
+  check("quest rides a double", quest ~= nil and quest.right == "|cFFFFD65210%|r of level")
+  check("doubles wear body text", reach ~= nil and sameColor({ reach.r, reach.g, reach.b }, { 1, 1, 1 }))
+end
+do -- hex comes from the palette, never a literal
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("hex rest", ns.hex(ns.COLORS.rest) == "4D99FF")
+  check("hex quest", ns.hex(ns.COLORS.quest) == "FFD652")
+  check("hex gold", ns.hex(ns.COLORS.gold) == "FFD100")
+  check("hex bad token", ns.hex(nil) == "FFFFFF")
 end
 do -- the tooltip names its bonus section
   local w = newWorld()
@@ -1347,10 +1381,10 @@ local function greenlines(w)
 end
 
 local function missinglines(w)
-  -- Muted lines between the status line and the slash hint are the gaps.
+  -- Muted lines below the status line are the gaps (or the watched line).
   local texts = tiptexts(w)
   local out = {}
-  for i = 3, #texts - 1 do
+  for i = 3, #texts do
     local l = w.gametip.lines[i]
     if sameColor({ l.r, l.g, l.b }, MUTED_C) then out[#out + 1] = l.text end
   end
@@ -1459,6 +1493,79 @@ do -- aura changes refresh the tooltip
   hover(w)
   check("player aura shows", greenlines(w) == "Well Fed · kill XP")
 end
+do -- Forever: the sleeping bag buff stacks to +3%
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { applications = 3, expirationTime = w.now + 660 }
+  auraTick(w)
+  check("forever bag stacks", greenlines(w) == "+3% Well-Rested (10m left)")
+end
+do -- Forever: partial stacks show their own value
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { applications = 1, expirationTime = w.now + 660 }
+  auraTick(w)
+  check("forever bag partial", greenlines(w) == "+1% Well-Rested (10m left)")
+end
+do -- Forever: stacks clamp at the max
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { applications = 9 }
+  auraTick(w)
+  check("forever bag clamps", greenlines(w) == "+3% Well-Rested")
+end
+do -- Forever: the bag without a readable count shows the plain grant
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { expirationTime = w.now + 660 }
+  auraTick(w)
+  check("forever bag no count", greenlines(w) == "Well-Rested · kill and quest XP (10m left)")
+end
+do -- Forever: cooked food pays +5% on kills
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
+  auraTick(w)
+  check("forever food pays", greenlines(w) == "+5% Well Fed")
+end
+do -- Forever: a refused stack count shows the plain grant, never an error
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.secretStamps[3] = true
+  w.aurasByName["Well-Rested"] = { applications = 3, expirationTime = w.now + 660 }
+  auraTick(w)
+  check("forever bag secret stacks", greenlines(w) == "Well-Rested · kill and quest XP (10m left)")
+end
+do -- retail never lists the bag buff
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { applications = 3 }
+  auraTick(w)
+  check("retail ignores bag", greenlines(w) == "")
+  check("retail missing ignores bag", not missinglines(w):find("Well-Rested", 1, true))
+end
+do -- Forever: the food entry is name-only, no ID to fall back to
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 660 }
+  auraTick(w)
+  check("forever food needs no id", greenlines(w) == "+5% Well Fed (10m left)")
+end
 
 -- 16. Missing-buff feedback: the registry's dimmed half.
 do -- bare character sees the one gap
@@ -1503,6 +1610,44 @@ do -- no container API: the long hint, never an error
   clientLoaded(w)
   hover(w)
   check("missing no container api", missinglines(w) == "Well Fed · kill XP (eat food)")
+end
+do -- Forever: both gaps, food first by value
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("forever missing both", missinglines(w) == "Well Fed · kill XP (cooked food with +5% kill XP)\n"
+    .. "Well-Rested · kill and quest XP (lie in the bag)")
+end
+do -- Forever: food in bags does not shortcut the tooltip check
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.bags = { [0] = { "Bread" } }
+  w.itemInfo = { Bread = { 101, "Food", "Bread", "", "icon", 0, 5 } }
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("forever missing no shortcut", missinglines(w) == "Well Fed · kill XP (cooked food with +5% kill XP)\n"
+    .. "Well-Rested · kill and quest XP (lie in the bag)")
+end
+do -- Forever: a live bag hides only its own gap
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well-Rested"] = { applications = 3 }
+  auraTick(w)
+  check("forever missing bag live", missinglines(w) == "Well Fed · kill XP (cooked food with +5% kill XP)")
+end
+do -- Forever: live food hides only its own gap
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
+  auraTick(w)
+  check("forever missing food live", missinglines(w) == "Well-Rested · kill and quest XP (lie in the bag)")
 end
 
 
@@ -2177,17 +2322,18 @@ do -- Forever: the same single gap
   local ns = loadAddon(w)
   clientLoaded(w)
   hover(w)
-  check("forever missing registry", missinglines(w) == "Well Fed · kill XP (eat food)")
+  check("forever missing registry", missinglines(w) == "Well Fed · kill XP (cooked food with +5% kill XP)\n"
+    .. "Well-Rested · kill and quest XP (lie in the bag)")
   check("forever flavor", ns.clientFlavor() == "forever")
 end
-do -- Forever plus Well Fed: nothing missing, the section hides
+do -- Forever plus Well Fed: only the bag gap remains
   local w = newWorld()
   w.addonInterfaceVersion = 16001
   loadAddon(w)
   clientLoaded(w)
   w.aurasByName["Well Fed"] = {}
   auraTick(w)
-  check("forever fed hides missing", missinglines(w) == "")
+  check("forever fed hides missing", missinglines(w) == "Well-Rested · kill and quest XP (lie in the bag)")
 end
 do -- Forever: a present aura still shows
   local w = newWorld()
@@ -2196,9 +2342,9 @@ do -- Forever: a present aura still shows
   loadAddon(w)
   clientLoaded(w)
   auraTick(w)
-  check("forever fed active", greenlines(w) == "Well Fed · kill XP")
+  check("forever fed active", greenlines(w) == "+5% Well Fed")
 end
-do -- Forever in an instance: the scan note, nothing else
+do -- Forever in an instance: the scan note replaces both gaps
   local w = newWorld()
   w.addonInterfaceVersion = 16001
   w.inInstance = true
@@ -2281,6 +2427,39 @@ do -- aura reads gate on presence throughout
   check("no aura api has none", ns.hasAura(24870) == false)
   check("no aura api times none", ns.auraTimeLeft(24870) == nil)
   check("no instance api reads outside", ns.inInstance() == false)
+end
+do -- stacks clamp at the entry max
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  local ns = loadAddon(w)
+  local entry = { name = "Well-Rested", stacks = true, pctPerStack = 1, maxStacks = 3 }
+  w.aurasByName["Well-Rested"] = { applications = 9 }
+  check("stacks clamp", ns.entryStacks(entry) == 3)
+  w.aurasByName["Well-Rested"] = { applications = 2 }
+  check("stacks read", ns.entryStacks(entry) == 2)
+  w.aurasByName["Well-Rested"] = {}
+  check("stacks missing count", ns.entryStacks(entry) == nil)
+end
+do -- stacks need a stacking entry and a live aura
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.aurasByName["Well Fed"] = { applications = 3 }
+  check("stacks need flag", ns.entryStacks(ns.REGISTRY[1]) == nil)
+  check("stacks need aura", ns.entryStacks({ name = "Nope", stacks = true }) == nil)
+  check("stacks need entry", ns.entryStacks(nil) == nil)
+end
+do -- unknown spell IDs never error
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("nil id reads absent", ns.playerAura(nil) == nil)
+end
+do -- flavor filter keeps each side's own entries
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("retail applies", ns.entryApplies({ flavors = { "retail" } }) == true)
+  check("retail skips forever", ns.entryApplies({ flavors = { "forever" } }) == false)
+  check("unflavored applies", ns.entryApplies({}) == true)
+  check("bad entry skips", ns.entryApplies(nil) == false)
 end
 
 
@@ -2741,9 +2920,10 @@ do -- full tooltip order in rep mode; XP-only buffs stay out
     "Collecting data",
     "Collecting data",
     "Court: Honored · 33% to Revered",
+    " ",
+    "Bonuses",
     "+10% WHEE!",
     "Following watched faction",
-    "/vxp shows or hides it. /vxp help lists the rest.",
   }, "|"))
   check("rep bonus green", sameColor(tipcolor(w, "+10% WHEE!"), GREEN_C))
 end
