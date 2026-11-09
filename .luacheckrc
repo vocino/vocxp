@@ -25,9 +25,12 @@ globals = {
 read_globals = {
   "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check (live + forever)
   "C_GossipInfo", "C_MajorFactions", "C_Reputation", -- rep mode: friendship, renown, standings (live + forever)
-  "C_PaperDollInfo", "C_PvP", "C_QuestLog", "C_Timer", "C_UnitAuras",
-  "CreateFrame", "EventRegistry", "GameTooltip", "GetInventoryItemQuality",
+  "C_QuestLog", "C_Timer", "C_UnitAuras",
+  "CreateFrame", "EventRegistry", "GameTooltip",
+  "C_Container", "C_Item", -- bag walk for the food hint + item class read (live + forever)
   "GetQuestLogRewardXP", "GetTime", "GetXPExhaustion",
+  "canaccessvalue", -- secret-aware aura time reads, presence-gated
+  "NUM_BAG_SLOTS", -- bag 0 plus worn bags for the food hint, presence-gated
   "InCombatLockdown", "IsInInstance", "IsXPUserDisabled",
   "Settings", "StatusTrackingBarManager", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
@@ -37,6 +40,8 @@ read_globals = {
   "GetMaxLevelForLatestExpansion", "GetMaxLevelForPlayerExpansion", "GetMaxPlayerLevel",
   "PlayerIsTimerunning", "IsTrialAccount", -- cap detection mirrors GameRulesUtil (live + forever)
   "PlaySound", "SOUNDKIT", -- presence-gated; ns.play falls back to numeric IDs
+  "ShouldRestedXpBarDisplayWhenOverflowing", -- native overflow rule, presence-gated
+  "UIFrameFadeIn", "UIFrameFadeOut", -- bar show/hide ride the native fade
 }
 
 files["tests/**"] = {

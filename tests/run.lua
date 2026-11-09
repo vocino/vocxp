@@ -64,28 +64,39 @@ local function loadAddon(world)
   native.Show = function(self) self.shown = true end
   g.StatusTrackingBarManager = native
   world.native = native
-  g.C_PvP = {
-    IsWarModeDesired = function() return world.warMode end,
-    GetWarModeRewardBonus = function() return world.warBonus end,
+  g.C_UnitAuras = {
+    GetPlayerAuraBySpellID = function(id) return world.auras[id] end,
+    GetAuraDataBySpellName = function(_, spellName) return world.aurasByName[spellName] end,
   }
-  g.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return world.auras[id] end }
+  g.C_Item = {
+    GetItemInfoInstant = function(link)
+      local info = world.itemInfo[link]
+      if info == nil then return nil end
+      return info[1], info[2], info[3], info[4], info[5], info[6], info[7]
+    end,
+  }
+  g.C_Container = {
+    GetContainerNumSlots = function(bag) return #(world.bags[bag] or {}) end,
+    GetContainerItemLink = function(bag, slot) return (world.bags[bag] or {})[slot] end,
+  }
+  g.NUM_BAG_SLOTS = 4
+  if world.secretGuard ~= false then
+    g.canaccessvalue = function(v) return world.secretStamps[v] ~= true end
+  end
+
+  if world.restOverflowRule ~= nil then
+    g.ShouldRestedXpBarDisplayWhenOverflowing = function() return world.restOverflowRule end
+  end
   g.C_AddOns = {
     GetAddOnInterfaceVersion = function(n)
       world.queriedAddon = n
       return world.addonInterfaceVersion
     end,
+    IsAddOnLoaded = function(n) return world.loadedAddons[n] == true end,
   }
-  g.C_PaperDollInfo = {
-    GetInventorySlotInfo = function(slotName)
-      world.slotQueries[#world.slotQueries + 1] = slotName
-      return world.slotIDs[slotName]
-    end,
-  }
-  g.GetInventoryItemQuality = function(unit, slot)
-    if unit ~= "player" then return nil end
-    return world.equipped[slot]
-  end
+
   g.IsInInstance = function() return world.inInstance end
+  g.InCombatLockdown = function() return world.inCombat end
   g.GetMaxLevelForLatestExpansion = function() return world.latestMaxLevel end
   g.GetMaxLevelForPlayerExpansion = function() return world.expansionMaxLevel end
   g.GetMaxPlayerLevel = function() return world.playerMaxLevel end
@@ -193,6 +204,9 @@ local function loadAddon(world)
     g.Settings = S
   end
   g.C_Timer = {
+    After = function(secs, fn)
+      world.afters[#world.afters + 1] = { secs = secs, fn = fn }
+    end,
     NewTicker = function(secs, fn)
       local t = { secs = secs, fn = fn }
       t.Cancel = function(self) self.cancelled = true end
@@ -227,7 +241,7 @@ local function loadAddon(world)
   g.CreateFrame = function(ftype, _, _, template)
     if world.failTemplate and template ~= nil then error("unknown template") end
     local f = { events = {}, scripts = {}, ctype = ftype, template = template,
-                strings = {}, textures = {} }
+                strings = {}, textures = {}, shown = true }
     f.SetSize = function(_, w, h) f.size = { w, h } end
     f.SetHeight = function(_, h) f.height = h end
     f.SetMovable = function(_, m) f.movable = m end
@@ -238,6 +252,7 @@ local function loadAddon(world)
     f.EnableMouse = function(_, m) f.mouse = m end
     f.SetRoundLayoutToNearestPixel = function(_, e) f.rounded = e end
     f.SetShown = function(_, s) f.shown = s end
+    f.IsShown = function() return f.shown ~= false end
     f.SetAllPoints = function() f.allPoints = true end
     f.SetScript = function(_, sname, fn) f.scripts[sname] = fn end
     -- The client ignores StartMoving on a non-movable frame; emulate
@@ -314,8 +329,6 @@ local function loadAddon(world)
   world.label = world.bar.strings[1]
   world.frameTex = world.frame.textures[1] -- the stroke hangs on the frame
   world.pip = world.bar.textures[4]
-  world.rate = world.frame.strings[1]
-  world.sub = world.frame.strings[2]
   world.ns = ns
   world.env = g
   return ns
@@ -323,18 +336,19 @@ end
 
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
-           restedXp = nil, xpDisabled = false, warMode = false, warBonus = 10,
+           restedXp = nil, xpDisabled = false,
            factions = {}, watchedID = nil, isMajor = {}, paragon = {},
            playerMaxLevel = 90, expansionMaxLevel = 90, latestMaxLevel = 90,
            timerunning = false, trial = false,
            major = {}, friendship = {}, collapsed = {},
-           inInstance = false, auras = {},
+           inInstance = false, auras = {}, aurasByName = {},
+           bags = {}, itemInfo = {}, secretStamps = {},
+           fades = {}, afters = {},
+           inCombat = false, loadedAddons = {},
            addonInterfaceVersion = 120105,
            quests = {}, ready = {}, questReward = {}, selectedQuest = 0, selectLog = {},
            editCallbacks = {},
-           slotIDs = { HeadSlot = 1, NeckSlot = 2, ShoulderSlot = 3, BackSlot = 15,
-                       ChestSlot = 5, LegsSlot = 7, Finger0Slot = 11, Finger1Slot = 12 },
-           equipped = {}, slotQueries = {},
+
            printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil,
            gametip = { lines = {} }, withSettings = false, settingsReg = {},
            settingsChecks = 0, settingCallbacks = {} }
@@ -382,9 +396,6 @@ local function sameColor(c, want)
   return c ~= nil and c[1] == want[1] and c[2] == want[2] and c[3] == want[3]
 end
 
-local function wear(w, ...)
-  for _, slotName in ipairs({ ... }) do w.equipped[w.slotIDs[slotName]] = 7 end
-end
 
 local function setQuests(w, list)
   -- list: { { id = n, xp = n|nil, ready = bool, header = bool } }
@@ -466,38 +477,25 @@ do
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  check("frame holds bar and lines", w.frame.size[1] == 571 and w.frame.size[2] == 55)
-  check("rate line face", w.rate.template == "GameFontNormal")
-  check("rate line shadow", w.rate.shadow[1] == 1 and w.rate.shadow[2] == -1)
-  check("rate line under bar", w.rate.point[1] == "TOP" and w.rate.point[3] == "TOP" and w.rate.point[5] == -22)
-  check("rate line snapped", w.rate.rounded == true)
+  check("frame is the art zone only", w.frame.size[1] == 571 and w.frame.size[2] == 17)
+  check("no rate line on the frame", #w.frame.strings == 0)
   check("bar sits in the art", w.bar.size[1] == 565 and w.bar.size[2] == 11 and w.bar.point[1] == "TOPLEFT" and w.bar.point[2] == 1 and w.bar.point[3] == -1)
-  check("stats line face", w.sub.template == "GameFontNormal")
-  check("stats line shadow", w.sub.shadow[1] == 1 and w.sub.shadow[2] == -1)
-  check("stats line under rate", w.sub.point[1] == "TOP" and w.sub.point[2] == w.rate)
-  check("stats line snapped", w.sub.rounded == true)
-  check("stats line starts hidden", w.sub.shown == false)
+  check("label starts hidden", w.label.shown == false)
   check("label carries the 1px shadow", w.label.shadow[1] == 1 and w.label.shadow[2] == -1)
   check("every region snaps to pixels", w.frame.rounded == true and w.bar.rounded == true
     and w.bg.rounded == true and w.restFill.rounded == true and w.questFill.rounded == true
     and w.pip.rounded == true and w.label.rounded == true
-    and w.rate.rounded == true and w.sub.rounded == true
     and w.frameTex.rounded == true)
   check("animated bar needs no raw texture", w.bar.minmax == nil and w.bar.barTexture == nil)
   check("background atlas", w.bg.atlas == "UI-HUD-ExperienceBar-Background")
-  check("rested wears blue grain", w.restFill.atlas == nil
-    and w.restFill.file == "Interface\\TargetingFrame\\UI-StatusBar"
-    and w.restFill.vertex[1] == 0.3 and w.restFill.vertex[2] == 0.6
-    and w.restFill.vertex[3] == 1)
-  check("quests wear deep gold grain", w.questFill.atlas == nil
-    and w.questFill.blend == nil
-    and w.questFill.file == "Interface\\TargetingFrame\\UI-StatusBar"
-    and w.questFill.vertex[1] == 1 and w.questFill.vertex[2] == 0.7
-    and w.questFill.vertex[3] == 0.15)
+  check("rested wears prediction", w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction" and w.restFill.atlasSize == false)
+  check("quests borrow prediction in gold", w.questFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction"
+    and w.questFill.vertex[1] == 1 and w.questFill.vertex[2] == 0.84
+    and w.questFill.vertex[3] == 0.32)
   check("quest overlay above rested", w.restFill.layer == "ARTWORK" and w.restFill.sublevel == -1
     and w.questFill.layer == "ARTWORK" and w.questFill.sublevel == 0)
   check("overlays start hidden", w.restFill.shown == false and w.questFill.shown == false)
-  check("label uses the highlight face", w.label.template == "GameFontHighlight")
+  check("label uses the native face", w.label.template == "TextStatusBarText")
   check("label centered", w.label.point[1] == "CENTER" and w.label.point[4] == 0
     and w.label.point[5] == 1)
   check("bar uses the animated template", w.bar.template == "GradualAnimatedStatusBarTemplate")
@@ -505,7 +503,8 @@ do
     and w.frameTex.atlasSize == false and w.frameTex.size[1] == 571 and w.frameTex.size[2] == 17)
   check("pip atlas", w.pip.atlas == "UI-HUD-ExperienceBar-Frame-Pip")
   check("pip starts hidden", w.pip.shown == false)
-  check("art pins its size", w.bg.atlasSize == false and w.pip.atlasSize == false)
+  check("art pins its size", w.bg.atlasSize == false and w.pip.atlasSize == false
+    and w.restFill.atlasSize == false and w.questFill.atlasSize == false)
   check("frame movable", w.frame.movable == true)
   check("frame clamped", w.frame.clamped == true)
   check("frame drags on left button", w.frame.dragButton == "LeftButton")
@@ -537,8 +536,7 @@ do -- rested overlay reaches past progress and swaps the fill
   check("rested overlay width", close(w.restFill.width, 452))
   check("rested overlay cropped, not stretched", w.restFill.texcoord ~= nil
     and close(w.restFill.texcoord[1], 0) and close(w.restFill.texcoord[2], 0.8))
-  check("rested section reads blue", w.restFill.vertex[1] == 0.3
-    and w.restFill.vertex[2] == 0.6 and w.restFill.vertex[3] == 1)
+  check("rested fill wears prediction", w.restFill.atlas == "UI-HUD-ExperienceBar-Fill-Prediction")
   check("rested bar atlas", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Rested")
   check("rested flare pair", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
@@ -578,12 +576,13 @@ do -- quest overlay spans from progress to the turn-in reach
   setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 200, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   check("quest overlay shown", w.questFill.shown == true)
-  check("quest overlay starts at progress", close(w.questFill.points[1][4], 282.5))
-  check("quest overlay width", close(w.questFill.width, 169.5))
+  check("quest overlay starts at progress", w.questFill.points[1][1] == "BOTTOMLEFT"
+    and close(w.questFill.points[1][4], 282.5))
+  check("quest overlay width", close(w.questFill.size[1], 169.5) and close(w.questFill.size[2], 11))
   check("quest overlay cropped to its span", w.questFill.texcoord ~= nil
     and close(w.questFill.texcoord[1], 0.5) and close(w.questFill.texcoord[2], 0.8))
   check("quest section reads deep gold", w.questFill.vertex[1] == 1
-    and w.questFill.vertex[2] == 0.7 and w.questFill.vertex[3] == 0.15)
+    and w.questFill.vertex[2] == 0.84 and w.questFill.vertex[3] == 0.32)
   hover(w)
   check("tooltip quest line", tiphas(w, "2 quests ready: 30% of level"))
 end
@@ -598,7 +597,7 @@ do -- rested stacks beyond quest: the pip marks true runout past turn-ins
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   check("stacked rested width", close(w.restFill.width, 452))
   check("stacked pip past quest edge", w.pip.shown == true
-    and close(w.pip.points[1][4], 452) and w.questFill.width < 452)
+    and close(w.pip.points[1][4], 452) and w.questFill.size[1] < 452)
 end
 do -- one quest reads singular
   local w = newWorld()
@@ -608,6 +607,25 @@ do -- one quest reads singular
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   hover(w)
   check("tooltip one quest", tiphas(w, "1 quest ready: 100% of level"))
+end
+do -- rested overflow follows the native rule
+  local w = newWorld()
+  w.restOverflowRule = false
+  w.restedXp = 500
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 900
+  xpEvent(w)
+  check("overflow hides fill when native hides", w.restFill.shown == false)
+end
+do -- a missing rule keeps the old behavior and shows it
+  local w = newWorld()
+  w.restedXp = 500
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 900
+  xpEvent(w)
+  check("missing rule shows overflow", w.restFill.shown == true and close(w.restFill.width, 565))
 end
 do -- overlays clamp at the bar edge, never past it
   local w = newWorld()
@@ -619,7 +637,7 @@ do -- overlays clamp at the bar edge, never past it
   setQuests(w, { { id = 11, xp = 5000, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   check("rested clamps", close(w.restFill.width, 565))
-  check("quest clamps", close(w.questFill.width, 282.5))
+  check("quest clamps", close(w.questFill.size[1], 282.5))
 end
 
 -- 31. Native fidelity: the pip, the plain-bar fallback, atlas failure.
@@ -672,9 +690,8 @@ do -- missing atlases hide their layers, never the bar
   check("no-atlas bg hidden", w.bg.shown == false)
   check("no-atlas frame hidden", w.frameTex.shown == false)
   check("no-atlas hides pip", w.pip.shown == false)
-  -- File-texture overlays need no atlas art: rested still paints, and the
-  -- quest layer stays hidden only because this world has no turn-ins.
-  check("no-atlas keeps grain overlays", w.restFill.shown == true
+  -- Prediction overlays need atlas art: both hide without it.
+  check("no-atlas hides overlays", w.restFill.shown == false
     and w.questFill.shown == false)
   check("no-atlas bar paints", w.bar.value == 500 and w.label.text == "10  500/1k (50%)")
 end
@@ -696,43 +713,62 @@ do
   check("stats neither hides", ns.subStatsLine(ns.barSegments(snap, 0, 0), 0) == nil)
   check("stats nil seg hides", ns.subStatsLine(nil, 2) == nil)
 end
-do -- refresh paints and clears the line live
+do -- hover reveals the bar label; leaving hides it
   local w = newWorld()
-  w.restedXp = 300
   loadAddon(w)
   clientLoaded(w)
-  w.xp = 500
-  xpEvent(w)
-  setQuests(w, { { id = 11, xp = 100, ready = true }, { id = 12, xp = 100, ready = true } })
-  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
-  check("stats paints", w.sub.shown == true
-    and w.sub.text == "2 quests ready: 20% · Rested: 30%")
-  setQuests(w, {})
-  w.restedXp = nil
-  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
-  check("stats clears", w.sub.shown == false)
+  check("label starts hidden", w.label.shown == false)
+  hover(w)
+  check("hover shows label", w.label.shown == true)
+  w.frame.scripts.OnLeave(w.frame)
+  check("leave hides label", w.label.shown == false)
 end
 
--- 33. Rate line: XP/hr and time-to-level, always on screen.
-do
+-- 33. Hover label and the generation-guarded fade.
+do -- the label paints live but shows only on hover
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  check("rate collects", w.rate.text == "Collecting data")
-  w.now = w.now + 1800
   w.xp = 500
   xpEvent(w)
-  check("rate paints", w.rate.text == "3k XP/hr · 15m")
-  w.env.SlashCmdList.VOCXP("pause")
-  check("rate pauses", w.rate.text == "Paused")
+  check("label paints live", w.label.text == "10  500/1k (50%)")
+  check("label stays hidden off hover", w.label.shown == false)
+  hover(w)
+  check("hover reveals label", w.label.shown == true)
+end
+do -- hiding rides the native fade, delayed and generation-guarded
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.env.UIFrameFadeIn = function(fr, t, a, b)
+    w.fades[#w.fades + 1] = { f = fr, t = t, a = a, b = b, dir = "in" }
+  end
+  w.env.UIFrameFadeOut = function(fr, t, a, b)
+    w.fades[#w.fades + 1] = { f = fr, t = t, a = a, b = b, dir = "out" }
+  end
+  clientLoaded(w)
+  check("shown starts visible", w.frame.shown == true)
+  ns.barShown(false)
+  check("hide fades out", w.fades[#w.fades].dir == "out" and w.frame.shown == true)
+  check("hide waits one tick", #w.afters == 1)
+  ns.barShown(true)
+  check("quick reshow eats nothing", w.frame.shown == true)
+  w.afters[1].fn()
+  check("stale hide never lands", w.frame.shown == true)
+end
+do -- without the fader the hide lands at once
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.barShown(false)
+  check("no-fader hides at once", w.frame.shown == false and #w.fades == 0)
 end
 
 -- 34. Degradation: font fallback, sub-1% reach hides.
 do
   local w = newWorld()
-  w.failFont = "GameFontHighlight"
+  w.failFont = "TextStatusBarText"
   loadAddon(w)
-  check("font fallback", w.label.template == "GameFontNormal")
+  check("font fallback", w.label.template == "GameFontNormalSmall")
 end
 do -- slivers show in the overlays but never as 0% lines
   local w = newWorld()
@@ -762,6 +798,7 @@ do
   local noRested = ns.barSegments({ level = 10, xp = 250, req = 1000, capped = false }, 0, 500)
   check("no rested, no rested tail", close(noRested.restedEnd, 0.75) and noRested.hasRested == false)
   check("segment percents", close(seg.pct, 25) and close(seg.restedPct, 25) and close(seg.questPct, 50))
+  check("overflow flags native semantics", seg.restedOverflow == false)
   check("segment label", ns.barLabel({ level = 10, xp = 250, req = 1000 }, seg) == "10  250/1k (25%)")
   check("label rounds half up",
     ns.barLabel({ level = 10, xp = 1, req = 200 }, ns.barSegments(
@@ -773,6 +810,7 @@ do
   check("bad overlays vanish", bad.restedEnd == bad.progress and bad.questEnd == bad.progress)
   local over = ns.barSegments({ level = 10, xp = 900, req = 1000, capped = false }, 500, 500)
   check("overlays clamp at full", over.restedEnd == 1 and over.questEnd == 1)
+  check("overflow trips past full", over.restedOverflow == true)
 end
 
 -- 5. Max level pivots to reputation; the native bar stays hidden.
@@ -791,7 +829,9 @@ do -- watched faction takes the bar with its rank context
   check("rep mode keeps ticker", #w.tickers == 1)
   check("rep events registered", w.frame.events.UPDATE_FACTION == true
     and w.frame.events.MAJOR_FACTION_RENOWN_LEVEL_CHANGED == true
-    and w.frame.events.FACTION_STANDING_CHANGED == true)
+    and w.frame.events.FACTION_STANDING_CHANGED == true
+    and w.frame.events.PLAYER_REGEN_DISABLED == true
+    and w.frame.events.PLAYER_REGEN_ENABLED == true)
   check("xp events unregistered", w.frame.events.PLAYER_XP_UPDATE == nil
     and w.frame.events.QUEST_LOG_UPDATE == nil and w.frame.events.UPDATE_EXHAUSTION == nil)
   check("rep aura stays", w.frame.events.UNIT_AURA == true)
@@ -801,8 +841,9 @@ do -- watched faction takes the bar with its rank context
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Reputation-2x-Flipbook")
   check("rep overlays off", w.restFill.shown == false and w.questFill.shown == false
     and w.pip.shown == false)
-  check("rep rate collects", w.rate.text == "Collecting data")
-  check("rep stats rank", w.sub.shown == true and w.sub.text == "Honored · 33% to Revered")
+  hover(w)
+  check("rep tooltip collects", tiptexts(w)[1] == "Collecting data")
+  check("rep tooltip rank", tiphas(w, "Court: Honored · 33% to Revered"))
 end
 do -- nothing tracked: guidance instead of a blank bar
   local w = newWorld()
@@ -813,8 +854,6 @@ do -- nothing tracked: guidance instead of a blank bar
   check("untracked keeps native hidden", w.native.shown == false)
   check("untracked label", w.label.text == "No faction tracked")
   check("untracked bar empty", w.bar.value == 0)
-  check("untracked rate", w.rate.text == "No reputation tracked")
-  check("untracked hides stats", w.sub.shown == false)
   hover(w)
   check("untracked tooltip", tiptexts(w)[1] == "No reputation tracked"
     and tiptexts(w)[2] == "Watch a faction to track it")
@@ -998,7 +1037,7 @@ do
 end
 do -- full stack orders every section
   local w = newWorld()
-  w.warMode, w.restedXp = true, 500
+  w.restedXp = 500
   loadAddon(w)
   clientLoaded(w)
   w.now = w.now + 60
@@ -1011,14 +1050,11 @@ do -- full stack orders every section
     "Warming up · last 1m of 10m",
     "Rested: 50% of level",
     "1 quest ready: 10% of level",
-    "+10% War Mode",
-    "Rested",
-    "+10% WHEE! (Faire week)",
-    "+10% Wickerman (Hallow's End)",
-    "Warband Mentored (needs a max-level character)",
+    "Bonuses",
+    "No XP bonus",
+    "Well Fed · kill XP (eat food)",
     "/vxp shows or hides it. /vxp help lists the rest.",
   }, "|"))
-  check("tooltip bonus green", sameColor(tipcolor(w, "+10% War Mode"), GREEN_C))
 end
 do -- bonus and gap colors
   local w = newWorld()
@@ -1026,10 +1062,17 @@ do -- bonus and gap colors
   clientLoaded(w)
   hover(w)
   check("no-bonus red", sameColor(tipcolor(w, "No XP bonus"), RED_C))
-  check("gap muted", sameColor(tipcolor(w, "Rested (rest in town)"), MUTED_C))
+  check("gap muted", sameColor(tipcolor(w, "Well Fed · kill XP (eat food)"), MUTED_C))
   local sub = w.gametip.lines[2]
   check("sub muted", sub.text == "Collecting data"
     and sameColor({ sub.r, sub.g, sub.b }, MUTED_C))
+end
+do -- the tooltip names its bonus section
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("bonuses header", tiphas(w, "Bonuses"))
 end
 do -- leaving the bar hides the tooltip
   local w = newWorld()
@@ -1283,6 +1326,17 @@ do
   check("no sound API is silent", #w.sounds == 0)
 end
 
+do -- numeric IDs play through the same guarded route
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.playID(123)
+  check("playID routes numeric", w.sounds[1] == 123)
+  ns.playID(0)
+  ns.playID("nope")
+  check("playID ignores junk", #w.sounds == 1)
+end
+
 -- Tooltip line helpers: green bonus lines and muted gap lines, in order.
 local function greenlines(w)
   local out = {}
@@ -1309,30 +1363,22 @@ local function auraTick(w)
   hover(w)
 end
 
--- 15. Bonus lines: every active XP source, highest value first.
-do
+-- 15. Bonus lines: the verified registry, nothing guessed.
+do -- Well Fed by name shows with its remaining time
   local w = newWorld()
-  w.warMode = true
   loadAddon(w)
   clientLoaded(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 660 }
   auraTick(w)
-  check("war mode line", tiptexts(w)[1] == "0 XP/hr" and greenlines(w) == "+10% War Mode")
+  check("well fed line", greenlines(w) == "Well Fed · kill XP (10m left)")
 end
-do
+do -- no reported time: the plain grant line
   local w = newWorld()
-  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
   auraTick(w)
-  check("rested line", greenlines(w) == "Rested")
-end
-do
-  local w = newWorld()
-  w.warMode, w.restedXp = true, 400
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("bonuses stack", greenlines(w) == "+10% War Mode\nRested")
+  check("well fed no time", greenlines(w) == "Well Fed · kill XP")
 end
 do
   local w = newWorld()
@@ -1341,132 +1387,58 @@ do
   auraTick(w)
   check("no bonus line", tiphas(w, "No XP bonus") and greenlines(w) == "")
 end
-do -- Call to Arms raises the Enlisted value above the +10% base
+do -- the spell ID covers clients without the name query
   local w = newWorld()
-  w.warMode, w.warBonus = true, 15
+  loadAddon(w)
+  w.env.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return w.auras[id] end }
+  clientLoaded(w)
+  w.auras[24870] = { expirationTime = w.now + 660 }
+  auraTick(w)
+  check("well fed id fallback", greenlines(w) == "Well Fed · kill XP (10m left)")
+end
+do -- an unrelated aura is not a bonus
+  local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
-  auraTick(w)
-  check("war mode live value", greenlines(w) == "+15% War Mode")
-end
-do
-  local w = newWorld()
-  w.warMode, w.warBonus = true, 30
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("war mode high call", greenlines(w) == "+30% War Mode")
-end
-do -- missing bonus API falls back to the +10% base
-  local w = newWorld()
-  w.warMode = true
-  loadAddon(w)
-  w.env.C_PvP = { IsWarModeDesired = function() return true end }
-  clientLoaded(w)
-  auraTick(w)
-  check("war mode fallback", greenlines(w) == "+10% War Mode")
-end
-do -- out-of-range value is not trusted
-  local w = newWorld()
-  w.warMode, w.warBonus = true, 5000
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("war mode range gate", greenlines(w) == "+10% War Mode")
-end
-do
-  local w = newWorld()
-  w.auras[430191] = { points = { 20 } }
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("mentored line", greenlines(w) == "+20% Warband Mentored")
-end
-do
-  local w = newWorld()
   w.auras[46668] = {}
+  auraTick(w)
+  check("unrelated aura ignored", tiphas(w, "No XP bonus") and greenlines(w) == "")
+end
+do -- an expired stamp reads no time, never an error
+  local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now - 10 }
   auraTick(w)
-  check("whee line", greenlines(w) == "+10% WHEE!")
+  check("expired stamp timeless", greenlines(w) == "Well Fed · kill XP")
 end
-do
+do -- a refused stamp reads no time, never an error
   local w = newWorld()
-  w.auras[136583] = {}
   loadAddon(w)
   clientLoaded(w)
+  w.secretStamps[4242] = true
+  w.aurasByName["Well Fed"] = { expirationTime = 4242 }
   auraTick(w)
-  check("top hat line", greenlines(w) == "+10% Darkmoon Top Hat")
+  check("secret stamp timeless", greenlines(w) == "Well Fed · kill XP")
 end
-do
+do -- without the secret guard the read still works
   local w = newWorld()
-  w.auras[24705] = {}
+  w.secretGuard = false
   loadAddon(w)
   clientLoaded(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 660 }
   auraTick(w)
-  check("grim visage line", greenlines(w) == "+10% Grim Visage")
+  check("no guard still times", greenlines(w) == "Well Fed · kill XP (10m left)")
 end
-do
+do -- missing aura API degrades to the hint, never an error
   local w = newWorld()
-  w.auras[95987] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("unburdened line", greenlines(w) == "+10% Unburdened")
-end
-do
-  local w = newWorld()
-  w.warMode, w.restedXp = true, 400
-  w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("bonuses sort by value", greenlines(w) ==
-    "+20% Warband Mentored\n+10% War Mode\n+10% WHEE!\nRested")
-end
-do -- highest bonus first across sources
-  local w = newWorld()
-  w.warMode, w.warBonus, w.restedXp = true, 30, 400
-  w.auras[430191], w.auras[46668] = { points = { 20 } }, {}
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("bonuses sort descending", greenlines(w) ==
-    "+30% War Mode\n+20% Warband Mentored\n+10% WHEE!\nRested")
-end
-do -- lines without a number trail the valued lines
-  local w = newWorld()
-  w.warMode = true
-  w.auras[430191] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("unvalued lines trail", greenlines(w) == "+10% War Mode\nWarband Mentored")
-end
-do -- missing aura API degrades to no aura lines, no error
-  local w = newWorld()
-  w.auras[46668] = {}
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 600 }
   loadAddon(w)
   w.env.C_UnitAuras = nil
   clientLoaded(w)
   auraTick(w)
   check("no aura api degrades", tiphas(w, "No XP bonus"))
-end
-do -- mentored without a readable value shows no number
-  local w = newWorld()
-  w.auras[430191] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("mentored fallback", greenlines(w) == "Warband Mentored")
-end
-do -- out-of-range value is not trusted
-  local w = newWorld()
-  w.auras[430191] = { points = { 5000 } }
-  loadAddon(w)
-  clientLoaded(w)
-  auraTick(w)
-  check("mentored range gate", greenlines(w) == "Warband Mentored")
+  check("no aura api hints", missinglines(w) == "Well Fed · kill XP (eat food)")
 end
 do -- aura changes refresh the tooltip
   local w = newWorld()
@@ -1478,88 +1450,62 @@ do -- aura changes refresh the tooltip
   hover(w)
   check("no aura yet", tiphas(w, "No XP bonus"))
   check("partial seconds sub", tiptexts(w)[2] == "Warming up · last 45s of 10m")
-  w.auras[46668] = {}
+  w.aurasByName["Well Fed"] = {}
   w.native.shown = true -- simulated Edit Mode reshow
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
   check("other unit ignored", w.native.shown == true)
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
   check("player aura refreshes", w.native.shown == false)
   hover(w)
-  check("player aura shows", greenlines(w) == "+10% WHEE!")
+  check("player aura shows", greenlines(w) == "Well Fed · kill XP")
 end
 
--- 16. Missing-buff feedback: gray lines name what each gap is worth.
-do -- bare character sees every gap
+-- 16. Missing-buff feedback: the registry's dimmed half.
+do -- bare character sees the one gap
   local w = newWorld()
   loadAddon(w)
   clientLoaded(w)
   hover(w)
-  check("missing full list", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
-    .. "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)\n"
-    .. "Rested (rest in town)")
+  check("missing full list", missinglines(w) == "Well Fed · kill XP (eat food)")
 end
-do -- partial stack shows only the gap
+do -- food in bags teaches the shorter hint
   local w = newWorld()
-  w.warMode, w.restedXp = true, 400
+  w.bags = { [0] = { "Bread" } }
+  w.itemInfo = { Bread = { 101, "Food", "Bread", "", "icon", 0, 5 } }
   loadAddon(w)
   clientLoaded(w)
   hover(w)
-  check("missing gap only", missinglines(w) == "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)")
+  check("missing food hint", missinglines(w) == "Well Fed · kill XP (food in bags)")
 end
-do -- full stack hides the section
+do -- non-food in bags stays the long hint
   local w = newWorld()
-  w.warMode, w.restedXp = true, 400
-  w.auras[430191] = { points = { 20 } }
-  w.auras[46668], w.auras[136583] = {}, {}
-  w.auras[24705], w.auras[95987] = {}, {}
+  w.bags = { [0] = { "Sword" } }
+  w.itemInfo = { Sword = { 102, "Weapon", "Sword", "", "icon", 2, 7 } }
   loadAddon(w)
   clientLoaded(w)
   hover(w)
+  check("missing nonfood hint", missinglines(w) == "Well Fed · kill XP (eat food)")
+end
+do -- live Well Fed hides the gap
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
+  auraTick(w)
   check("missing hidden when full", missinglines(w) == "")
 end
-do -- offered War Mode value follows Call to Arms
+do -- no container API: the long hint, never an error
   local w = newWorld()
-  w.warBonus = 15
+  w.bags = { [0] = { "Bread" } }
+  w.itemInfo = { Bread = { 101, "Food", "Bread", "", "icon", 0, 5 } }
   loadAddon(w)
+  w.env.C_Container = nil
   clientLoaded(w)
   hover(w)
-  check("missing live offer", missinglines(w):find(
-    "+15% War Mode (toggle in a capital)", 1, true) ~= nil)
-end
-do -- one Wickerman aura covers the neutral line
-  local w = newWorld()
-  w.auras[24705] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  hover(w)
-  check("wickerman covered", not missinglines(w):find("Wickerman", 1, true))
+  check("missing no container api", missinglines(w) == "Well Fed · kill XP (eat food)")
 end
 
--- Darkmoon buffs are either/or: one active covers the other.
-do
-  local w = newWorld()
-  w.auras[46668] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  hover(w)
-  local missed = missinglines(w)
-  check("whee covers top hat", not missed:find("Top Hat", 1, true))
-  check("whee not recommended", not missed:find("WHEE!", 1, true))
-end
-do
-  local w = newWorld()
-  w.auras[136583] = {}
-  loadAddon(w)
-  clientLoaded(w)
-  hover(w)
-  local missed = missinglines(w)
-  check("top hat covers whee", not missed:find("WHEE!", 1, true))
-  check("top hat not recommended", not missed:find("Top Hat", 1, true))
-end
+
 
 -- 17. Rolling-rate core: fake clock, deterministic snapshots.
 do -- read at session start: null rate and ETA, collecting
@@ -1930,18 +1876,15 @@ do -- stale long-window earnings never resurrect an ETA
   check("stale title zero", tiptexts(w)[1] == "0 XP/hr")
 end
 
--- 22. Aura reads go blind in instances: verifiable lines stay, the
--- rest becomes an honest note instead of false absence.
+-- 22. Aura reads go blind in instances: the honest note replaces the list.
 do
   local w = newWorld()
   w.inInstance = true
-  w.warMode, w.restedXp = true, 400
-  w.auras[430191] = { points = { 20 } }
-  w.auras[46668] = {}
   loadAddon(w)
   clientLoaded(w)
-  hover(w)
-  check("instance active lines", greenlines(w) == "+10% War Mode\nRested")
+  w.aurasByName["Well Fed"] = {}
+  auraTick(w)
+  check("instance active lines", greenlines(w) == "")
   check("instance missing note", missinglines(w) == "Aura scan unavailable in instances")
 end
 do
@@ -1951,9 +1894,7 @@ do
   clientLoaded(w)
   hover(w)
   check("instance bare body", tiphas(w, "No XP bonus"))
-  check("instance bare missing", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
-    .. "Rested (rest in town)\n"
-    .. "Aura scan unavailable in instances")
+  check("instance bare missing", missinglines(w) == "Aura scan unavailable in instances")
 end
 
 -- 23. Idle status: a quiet minute in a full window admits staleness.
@@ -2066,7 +2007,9 @@ do -- re-login after a ding keeps the one ticker
     and w.frame.events.UNIT_AURA == true and w.frame.events.PLAYER_LEVEL_UP == true
     and w.frame.events.PLAYER_EQUIPMENT_CHANGED == true
     and w.frame.events.UPDATE_EXHAUSTION == true
-    and w.frame.events.QUEST_LOG_UPDATE == true)
+    and w.frame.events.QUEST_LOG_UPDATE == true
+    and w.frame.events.PLAYER_REGEN_DISABLED == true
+    and w.frame.events.PLAYER_REGEN_ENABLED == true)
   check("rewake unregisters rep", w.frame.events.UPDATE_FACTION == nil)
   check("rewake reshows", w.frame.shown == true)
   hover(w)
@@ -2228,53 +2171,41 @@ do -- retail stays the default, querying our own addon entry
   check("retail flavor", ns.clientFlavor() == "retail")
   check("flavor queries own addon", w.queriedAddon == "VocXP")
 end
-do -- Forever: Rested is the only recommendation
+do -- Forever: the same single gap
   local w = newWorld()
   w.addonInterfaceVersion = 16001
   local ns = loadAddon(w)
   clientLoaded(w)
   hover(w)
-  check("forever missing rested only", missinglines(w) == "Rested (rest in town)")
+  check("forever missing registry", missinglines(w) == "Well Fed · kill XP (eat food)")
   check("forever flavor", ns.clientFlavor() == "forever")
 end
-do -- Forever plus Rested: nothing missing, the section hides
+do -- Forever plus Well Fed: nothing missing, the section hides
   local w = newWorld()
   w.addonInterfaceVersion = 16001
-  w.restedXp = 400
   loadAddon(w)
   clientLoaded(w)
-  hover(w)
-  check("forever rested hides missing", missinglines(w) == "")
-end
-do -- Forever: a lit War Mode flag still shows -- detection is ungated,
-   -- only recommendations gate on flavor
-  local w = newWorld()
-  w.addonInterfaceVersion = 16001
-  w.warMode = true
-  loadAddon(w)
-  clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
   auraTick(w)
-  check("forever war mode active", greenlines(w) == "+10% War Mode")
-  check("forever war mode unrecommended", missinglines(w) == "Rested (rest in town)")
+  check("forever fed hides missing", missinglines(w) == "")
 end
 do -- Forever: a present aura still shows
   local w = newWorld()
   w.addonInterfaceVersion = 16001
-  w.auras[46668] = {}
+  w.aurasByName["Well Fed"] = {}
   loadAddon(w)
   clientLoaded(w)
   auraTick(w)
-  check("forever whee active", greenlines(w) == "+10% WHEE!")
-  check("forever whee unrecommended", not missinglines(w):find("WHEE!", 1, true))
+  check("forever fed active", greenlines(w) == "Well Fed · kill XP")
 end
-do -- Forever in an instance: no scan note, no aura recs to explain
+do -- Forever in an instance: the scan note, nothing else
   local w = newWorld()
   w.addonInterfaceVersion = 16001
   w.inInstance = true
   loadAddon(w)
   clientLoaded(w)
   hover(w)
-  check("forever instance quiet", missinglines(w) == "Rested (rest in town)")
+  check("forever instance quiet", missinglines(w) == "Aura scan unavailable in instances")
 end
 do -- missing version API falls back to retail, never errors
   local w = newWorld()
@@ -2282,11 +2213,7 @@ do -- missing version API falls back to retail, never errors
   w.env.C_AddOns = {}
   clientLoaded(w)
   hover(w)
-  check("flavor fallback full list", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
-    .. "+10% WHEE! (Faire week)\n"
-    .. "+10% Wickerman (Hallow's End)\n"
-    .. "Warband Mentored (needs a max-level character)\n"
-    .. "Rested (rest in town)")
+  check("flavor fallback full list", missinglines(w) == "Well Fed · kill XP (eat food)")
 end
 do -- no C_AddOns at all: same retail fallback, silent
   local w = newWorld()
@@ -2295,157 +2222,77 @@ do -- no C_AddOns at all: same retail fallback, silent
   clientLoaded(w)
   hover(w)
   check("flavor nil fallback", w.ns.clientFlavor() == "retail")
-  check("flavor nil full list", missinglines(w):find("War Mode", 1, true) ~= nil)
+  check("flavor nil full list", missinglines(w):find("Well Fed", 1, true) ~= nil)
 end
 
--- 30. Regalia of Fabled Adventurers: heirloom count slows Rested use.
--- The set cuts Rested consumption 30% at 2 pieces and another 30% at 6;
--- the Rested line carries the live reduction, and the missing section
--- teaches the next threshold.
-do -- Rested + 2 heirlooms annotates the Rested line
-  local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot", "ChestSlot")
-  auraTick(w)
-  check("regalia 2pc annotates rested",
-    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
-  check("regalia 2pc missing teaches 6pc",
-    missinglines(w):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
-end
-do -- 6 pieces: the full -60%, nothing left to teach
-  local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
-  auraTick(w)
-  check("regalia 6pc annotates rested",
-    greenlines(w) == "Rested · -60% use (Regalia 6pc)")
-  check("regalia 6pc missing quiet", not missinglines(w):find("Regalia", 1, true))
-end
-do -- one heirloom: plain Rested, the 2pc taught below
-  local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot")
-  auraTick(w)
-  check("regalia 1pc rested plain", greenlines(w) == "Rested")
-  check("regalia 1pc missing teaches 2pc",
-    missinglines(w):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
-end
-do -- unrested with the set banked: Rested stays the ask, Regalia the next step
-  local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot", "ChestSlot")
-  auraTick(w)
-  check("regalia unrested no green line", tiphas(w, "No XP bonus"))
-  check("regalia unrested missing",
-    missinglines(w):find("Rested (rest in town)", 1, true) ~= nil
-    and missinglines(w):find("-60% Rested use (Regalia 6pc, 2/6 worn)", 1, true) ~= nil)
-end
-do -- non-heirloom gear never counts
-  local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot")
-  w.equipped[w.slotIDs.ChestSlot] = 4 -- epic, not an heirloom
-  auraTick(w)
-  check("regalia ignores epics", greenlines(w) == "Rested")
-  check("regalia epics still 1pc",
-    missinglines(w):find("-30% Rested use (Regalia 2pc, one more heirloom)", 1, true) ~= nil)
-end
-do -- thresholds: 0-1 nothing, 2-5 the first cut, 6+ the full cut
+-- 30. Aura reads: name query, ID fallback, remaining time, food in bags.
+-- One entry covers every food: the name read finds whichever food's
+-- buff is live, the ID stays the locale-proof fallback, and the bag
+-- scan teaches food in bags instead of guessing.
+do -- the name query finds any food's buff
   local w = newWorld()
   local ns = loadAddon(w)
-  local r0 = ns.regaliaReduction(0)
-  local r1 = ns.regaliaReduction(1)
-  local r2, t2 = ns.regaliaReduction(2)
-  local r5, t5 = ns.regaliaReduction(5)
-  local r6, t6 = ns.regaliaReduction(6)
-  local r8, t8 = ns.regaliaReduction(8)
-  check("regalia thresholds", r0 == 0 and r1 == 0 and r2 == 30 and r5 == 30
-    and r6 == 60 and r8 == 60 and t2 == "2pc" and t5 == "2pc" and t6 == "6pc" and t8 == "6pc")
+  w.aurasByName["Well Fed"] = { expirationTime = 4242 }
+  check("name query finds aura", ns.entryAura(ns.REGISTRY[1]) ~= nil)
+  check("name query marks live", ns.hasEntryAura(ns.REGISTRY[1]) == true)
 end
-do -- exactly the eight counting slots are scanned, never weapons or trinkets
+do -- the ID falls back when the name query is absent
   local w = newWorld()
-  loadAddon(w)
-  clientLoaded(w)
-  hover(w)
-  local seen = {}
-  for _, slotName in ipairs(w.slotQueries) do seen[slotName] = true end
-  local n = 0
-  for _ in pairs(seen) do n = n + 1 end
-  check("regalia scans eight slots", n == 8
-    and seen.HeadSlot and seen.NeckSlot and seen.ShoulderSlot and seen.BackSlot
-    and seen.ChestSlot and seen.LegsSlot and seen.Finger0Slot and seen.Finger1Slot)
+  local ns = loadAddon(w)
+  w.env.C_UnitAuras = { GetPlayerAuraBySpellID = function(id) return w.auras[id] end }
+  w.auras[24870] = { expirationTime = 4242 }
+  check("id fallback finds aura", ns.entryAura(ns.REGISTRY[1]) ~= nil)
 end
-do -- missing equipment API degrades to a plain Rested line, never an error
+do -- no aura anywhere reads absent, never an error
   local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  wear(w, "HeadSlot", "ChestSlot")
-  w.env.C_PaperDollInfo = nil
-  clientLoaded(w)
-  auraTick(w)
-  check("regalia no slot api degrades", greenlines(w) == "Rested")
-  check("regalia no slot api missing quiet", not missinglines(w):find("Regalia", 1, true))
+  local ns = loadAddon(w)
+  check("entry absent", ns.entryAura(ns.REGISTRY[1]) == nil)
+  check("entry not live", ns.hasEntryAura(ns.REGISTRY[1]) == false)
+  check("bad entry absent", ns.entryAura(nil) == nil)
 end
-do
+do -- remaining time is expiration minus the monotonic clock
   local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  wear(w, "HeadSlot", "ChestSlot")
-  w.env.GetInventoryItemQuality = nil
-  clientLoaded(w)
-  auraTick(w)
-  check("regalia no quality api degrades", greenlines(w) == "Rested")
+  local ns = loadAddon(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 600 }
+  check("entry time left", ns.entryTimeLeft(ns.REGISTRY[1]) == 600)
+  check("aura time left", ns.auraTimeLeft(24870) == nil)
 end
-do -- Forever: heirlooms predate the set, so the count means nothing there
+do -- food in bags reads the container API, class-gated
   local w = newWorld()
-  w.addonInterfaceVersion = 16001
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot", "LegsSlot")
-  auraTick(w)
-  check("regalia forever rested plain", greenlines(w) == "Rested")
-  check("regalia forever missing quiet", missinglines(w) == "")
+  local ns = loadAddon(w)
+  w.bags = { [0] = { "Bread", "Sword" }, [1] = { "Cheese" } }
+  w.itemInfo = {
+    Bread = { 101, "Food", "Bread", "", "icon", 0, 5 },
+    Cheese = { 103, "Food", "Cheese", "", "icon", 0, 5 },
+    Sword = { 102, "Weapon", "Sword", "", "icon", 2, 7 },
+  }
+  check("food found across bags", ns.foodInBags() == true)
+  w.bags = { [0] = { "Sword" } }
+  check("no food stays false", ns.foodInBags() == false)
+  w.env.C_Container = nil
+  w.bags = { [0] = { "Bread" } }
+  check("no container api stays false", ns.foodInBags() == false)
 end
-do -- gear swaps re-render at once through PLAYER_EQUIPMENT_CHANGED
+do -- aura reads gate on presence throughout
   local w = newWorld()
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  check("equipment event registered", w.frame.events.PLAYER_EQUIPMENT_CHANGED == true)
-  wear(w, "HeadSlot")
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.HeadSlot, false)
-  hover(w)
-  check("one heirloom plain", greenlines(w) == "Rested")
-  wear(w, "HeadSlot", "ChestSlot")
-  w.frame.scripts.OnEvent(w.frame, "PLAYER_EQUIPMENT_CHANGED", w.slotIDs.ChestSlot, false)
-  hover(w)
-  check("second heirloom annotates",
-    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
+  local ns = loadAddon(w)
+  w.env.C_UnitAuras = nil
+  check("no aura api reads absent", ns.playerAura(24870) == nil)
+  check("no aura api has none", ns.hasAura(24870) == false)
+  check("no aura api times none", ns.auraTimeLeft(24870) == nil)
+  check("no instance api reads outside", ns.inInstance() == false)
 end
-do -- instances keep the equipment-derived lines: the paper doll reads fine there
-  local w = newWorld()
-  w.inInstance = true
-  w.restedXp = 400
-  loadAddon(w)
-  clientLoaded(w)
-  wear(w, "HeadSlot", "ChestSlot")
-  auraTick(w)
-  check("regalia instance active",
-    greenlines(w) == "Rested · -30% use (Regalia 2pc)")
-  check("regalia instance missing", missinglines(w) == "+10% War Mode (toggle in a capital)\n"
-    .. "-60% Rested use (Regalia 6pc, 2/6 worn)\n"
-    .. "Aura scan unavailable in instances")
-end
+
+
+
+
+
+
+
+
+
+
+
 
 -- 35. Rep math: progress per kind, gains, labels, art.
 do -- standard progress: in-rank numbers and labels
@@ -2758,7 +2605,7 @@ do -- renown: blue fill, renown stats
   clientLoaded(w)
   check("renown label", w.label.text == "Amani  1k/3k (40%)")
   check("renown fill blue", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Blue")
-  check("renown stats", w.sub.text == "Renown 7 · 40% to 8")
+
   check("renown animated", w.bar.animated[1] == 1200 and w.bar.animated[2] == 0
     and w.bar.animated[3] == 3000 and w.bar.animated[4] == 7)
 end
@@ -2772,10 +2619,10 @@ do -- maxed renown: name-only label, cap title
   loadAddon(w)
   clientLoaded(w)
   check("renown maxed label", w.label.text == "Amani")
-  check("renown maxed rate", w.rate.text == "Renown 25")
+
   hover(w)
   check("renown maxed tooltip", tiptexts(w)[1] == "Renown 25" and tiptexts(w)[2] == "Rank complete")
-  check("renown maxed hides stats", w.sub.shown == false)
+
 end
 do -- paragon: green cycle bar, reward line when pending
   local w = newWorld()
@@ -2787,7 +2634,7 @@ do -- paragon: green cycle bar, reward line when pending
   clientLoaded(w)
   check("paragon label", w.label.text == "Para  2k/10k (23%)")
   check("paragon fill green", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
-  check("paragon stats", w.sub.text == "Paragon · 23% to reward")
+
   hover(w)
   check("paragon no pending line", not tiphas(w, "Paragon reward pending"))
   w.paragon[401].pending = true
@@ -2818,7 +2665,7 @@ do -- friendship: forced green, rank words
   clientLoaded(w)
   check("friendship label", w.label.text == "Valeera  500/2k (25%)")
   check("friendship fill green", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Green")
-  check("friendship stats", w.sub.text == "Good Friend · 25% to next rank")
+
   check("friendship animated level", w.bar.animated[4] == 3)
   hover(w)
   check("friendship tooltip", tiphas(w, "Valeera: Good Friend · 25% to next rank"))
@@ -2833,7 +2680,9 @@ do -- maxed friendship: name-only label, rank title
   loadAddon(w)
   clientLoaded(w)
   check("friendship maxed label", w.label.text == "Valeera")
-  check("friendship maxed rate", w.rate.text == "Best Friend")
+  hover(w)
+  check("friendship maxed tooltip", tiptexts(w)[1] == "Best Friend")
+
 end
 do -- exalted standard: name-only label, cap title
   local w = newWorld()
@@ -2843,8 +2692,8 @@ do -- exalted standard: name-only label, cap title
   loadAddon(w)
   clientLoaded(w)
   check("exalted label", w.label.text == "Court")
-  check("exalted rate", w.rate.text == "Exalted")
-  check("exalted hides stats", w.sub.shown == false)
+
+
   hover(w)
   check("exalted tooltip", tiptexts(w)[1] == "Exalted" and tiptexts(w)[2] == "Rank complete"
     and tiphas(w, "Court — Exalted"))
@@ -2881,7 +2730,7 @@ end
 do -- full tooltip order in rep mode; XP-only buffs stay out
   local w = newWorld()
   capWorld(w)
-  w.warMode, w.restedXp = true, 500
+  w.restedXp = 500
   w.auras[46668] = {}
   setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
   w.watchedID = 101
@@ -2893,8 +2742,6 @@ do -- full tooltip order in rep mode; XP-only buffs stay out
     "Collecting data",
     "Court: Honored · 33% to Revered",
     "+10% WHEE!",
-    "+10% Wickerman (Hallow's End)",
-    "+10% Spirit of Sharing (Pilgrim's Bounty)",
     "Following watched faction",
     "/vxp shows or hides it. /vxp help lists the rest.",
   }, "|"))
@@ -3253,7 +3100,7 @@ do -- Camelot native seats the long segmented bar at 1:1
   clientLoaded(w)
   w.xp = 500
   xpEvent(w)
-  check("camelot frame seats native", w.frame.size[1] == 1192 and w.frame.size[2] == 55)
+  check("camelot frame seats native", w.frame.size[1] == 1192 and w.frame.size[2] == 17)
   check("camelot trough seats native", w.bar.size[1] == 1189 and w.bar.size[2] == 14)
   check("camelot stroke spans native", w.frameTex.size[1] == 1192 and w.frameTex.size[2] == 17)
   check("camelot draws nineteen ticks", #w.frames == 21)
@@ -3338,4 +3185,173 @@ do -- without the divider template the ticks draw by hand
   check("hand ticks wear the divider atlas", handOk)
 end
 
+
+-- 43. Net gain summary: bursts share one deferred line; slow play stays silent.
+do -- two quick XP gains flush as one net line after 0.15s of quiet
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.xp = 100
+  xpEvent(w)
+  w.now = w.now + 0.05
+  w.xp = 250
+  xpEvent(w)
+  check("burst holds the line", #w.printed == before)
+  w.now = w.now + 0.2
+  w.tickers[1].fn()
+  check("burst reports one net line", #w.printed == before + 1
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: +250 XP")
+  w.tickers[1].fn()
+  check("report clears the burst", #w.printed == before + 1)
+end
+do -- a lone gain never earns a line
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.xp = 100
+  xpEvent(w)
+  w.now = w.now + 5
+  w.tickers[1].fn()
+  check("single gain stays silent", #w.printed == before)
+end
+do -- gains across a quiet spell never merge
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.noteSummaryGain(w.now, "xp", nil, nil, 100)
+  w.now = w.now + 5
+  ns.noteSummaryGain(w.now, "xp", nil, nil, 100)
+  check("quiet splits bursts", ns.formatSummary() == nil)
+  check("split burst never flushes", ns.flushSummary(w.now) == false)
+end
+do -- gains earned mid-fight wait for regen and report once
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.inCombat = true
+  w.xp = 100
+  xpEvent(w)
+  w.now = w.now + 0.05
+  w.xp = 300
+  xpEvent(w)
+  w.now = w.now + 1
+  w.tickers[1].fn()
+  check("combat holds the line", #w.printed == before)
+  w.inCombat = false
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_REGEN_ENABLED")
+  check("regen reports the net line", #w.printed == before + 1
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: +300 XP in combat")
+end
+do -- rep bursts net into one faction line
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.factions[1].standing = 15200
+  standingEvent(w, 101, 15200)
+  w.now = w.now + 0.05
+  w.factions[1].standing = 15500
+  standingEvent(w, 101, 15500)
+  check("rep burst holds", #w.printed == before)
+  w.now = w.now + 0.2
+  w.tickers[1].fn()
+  check("rep burst nets one line", #w.printed == before + 1
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: +500 rep with Court")
+end
+do -- the net line unit: mixed XP and multi-faction rep, junk rejected
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("bad gains rejected", ns.noteSummaryGain(w.now, "xp", nil, nil, 0) == false
+    and ns.noteSummaryGain(w.now, "gold", nil, nil, 5) == false
+    and ns.noteSummaryGain(w.now, "rep", nil, nil, 5) == false
+    and ns.noteSummaryGain(w.now, "rep", 101, nil, 5) == true)
+  ns.clearSummary()
+  ns.noteSummaryGain(w.now, "xp", nil, nil, 800)
+  ns.noteSummaryGain(w.now, "rep", 101, "Court", 500)
+  ns.noteSummaryGain(w.now, "rep", 202, "Wardens", 300)
+  check("mixed net line", ns.formatSummary() ==
+    "+800 XP, +800 rep (Court 500, Wardens 300)")
+end
+
+-- 44. Rival detection: warn once, never fight.
+do -- a loaded rival XP bar warns once with the hide hint
+  local w = newWorld()
+  w.loadedAddons.ElvUI = true
+  loadAddon(w)
+  clientLoaded(w)
+  local function rivalLines()
+    local n = 0
+    for _, line in ipairs(w.printed) do
+      if line == "|cff66ccffVocXP|r: ElvUI is loaded: two XP bars may show (/vxp hides ours)" then n = n + 1 end
+    end
+    return n
+  end
+  check("rival warns", rivalLines() == 1)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("rival warns once", rivalLines() == 1)
+end
+do -- no rival, no warning
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local noisy = false
+  for _, line in ipairs(w.printed) do
+    if line:find("two XP bars", 1, true) ~= nil then noisy = true end
+  end
+  check("silence without rivals", noisy == false)
+end
+do -- a hidden bar is no conflict
+  local w = newWorld()
+  w.loadedAddons.Bartender4 = true
+  w.savedVars = { shown = false }
+  loadAddon(w)
+  clientLoaded(w)
+  local noisy = false
+  for _, line in ipairs(w.printed) do
+    if line:find("two XP bars", 1, true) ~= nil then noisy = true end
+  end
+  check("hidden bar stays silent", noisy == false)
+end
+
+-- 45. /vxp rep re-enables the dormant disable path.
+do -- rep off at cap wakes rep mode at once
+  local w = newWorld()
+  w.savedVars = { repMode = false }
+  capWorld(w)
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("repMode off starts dormant", w.frame.shown == false)
+  w.env.SlashCmdList.VOCXP("rep")
+  check("rep wakes the bar", w.frame.shown == true and ns.db.repMode == true)
+  check("rep announces on", w.printed[#w.printed] == "|cff66ccffVocXP|r: reputation tracking on")
+  check("rep registers rep events", w.frame.events.UPDATE_FACTION == true
+    and w.frame.events.PLAYER_REGEN_ENABLED == true)
+  w.env.SlashCmdList.VOCXP("rep")
+  check("rep off sleeps again", w.frame.shown == false and ns.db.repMode == false)
+  check("rep announces off", w.printed[#w.printed] == "|cff66ccffVocXP|r: reputation tracking off")
+  check("rep off unregisters", w.frame.events.UPDATE_FACTION == nil
+    and w.frame.events.PLAYER_REGEN_ENABLED == nil)
+  local teaches = false
+  for _, line in ipairs(ns.HELP) do
+    if line:find("^/vxp rep") ~= nil then teaches = true end
+  end
+  check("help teaches rep", teaches)
+end
+do -- rep while leveling just flips the preference for the cap
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.env.SlashCmdList.VOCXP("rep")
+  check("leveling rep flips pref", ns.db.repMode == false)
+  check("leveling stays in xp", w.frame.shown == true and w.frame.events.PLAYER_XP_UPDATE == true)
+  w.env.SlashCmdList.VOCXP("rep")
+  check("leveling rep flips back", ns.db.repMode == true)
+end
 print("tests/run.lua: " .. passed .. " checks passed")

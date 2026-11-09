@@ -30,6 +30,16 @@ function ns.play(kind)
   pcall(PlaySound, type(id) == "number" and id or s[2])
 end
 
+-- Numeric IDs through the same route: a sound of our own (a configured
+-- chime) plays here, never with PlaySound directly, so a missing sound
+-- API stays silent instead of erroring.
+function ns.playID(id)
+  local num = tonumber(id)
+  if not num or num == 0 then return end
+  if type(PlaySound) ~= "function" then return end
+  pcall(PlaySound, num)
+end
+
 -- Palette (FAMILY.md "Palette"), defined once: house gold for the title
 -- and frame accent, green and brick red for bonus state only, gray for
 -- the missing-buff section. Nothing paints a color at a call site.
@@ -40,8 +50,14 @@ ns.COLORS = {
   red = { 0.9, 0.3, 0.25 },
   green = { 0.25, 0.9, 0.35 },
   rest = { 0.3, 0.6, 1 }, -- rested reach: clear blue over the purple fill
-  quest = { 1, 0.7, 0.15 }, -- banked quest XP: deeper gold, darker than the title face
+  quest = { 1, 0.84, 0.32 }, -- banked quest XP: bright gold over the prediction grain
 }
+
+-- r, g, b (and alpha when given) for a token, so a SetTextColor or
+-- SetColorTexture call reads as the token's name.
+function ns.rgb(token, alpha)
+  return token[1], token[2], token[3], alpha
+end
 local COLORS = ns.COLORS
 
 -- Defaults: the single source of truth (FAMILY.md "Settings"). A key
@@ -297,23 +313,23 @@ end
 
 -- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
 -- a StatusBar wearing the native XP fill atlases, the native
--- background, blue rested and gold quest overlays on classic bar grain, and a
--- GameFontHighlight label. Sized from the live native geometry every
--- refresh (see ns.applyGeometry), so the stroke and ticks land at 1:1
--- on whatever client is running.
+-- background, the prediction fill for rested reach (gold-tinted for
+-- banked quest reach), and the rested pip. Sized from the live native
+-- geometry every refresh, so the stroke and ticks land at 1:1. The
+-- frame is the art zone only; the bar label wears the native
+-- TextStatusBar face and shows on hover, like the native text.
 ns.BAR_WIDTH = 571 -- Mainline container width, the fallback everywhere
 ns.TROUGH_WIDTH = 565 -- InitializeBars seats the bar at container minus 6
 ns.TROUGH_HEIGHT = 11
 ns.MAX_SEGMENTS = 40 -- validation ceiling, twice the widest native bar
-ns.ART_HEIGHT = 17 -- the native container height; rate and stats live below it
-ns.FRAME_HEIGHT = 55 -- art zone, rate line, and stats line
+ns.ART_HEIGHT = 17 -- the native container height; the frame is exactly this
+ns.FILL_HEIGHT = 11 -- the native prediction fill height, bottom-anchored
 ns.XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience"
 ns.RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested"
--- ns.PREDICT_ATLAS retired: both overlays are solid palette colors now,
--- so the prediction material has no layer left to paint.
 ns.BG_ATLAS = "UI-HUD-ExperienceBar-Background"
 ns.FRAME_ATLAS = "UI-HUD-ExperienceBar-Frame"
 ns.PIP_ATLAS = "UI-HUD-ExperienceBar-Frame-Pip"
+ns.PREDICTION_ATLAS = "UI-HUD-ExperienceBar-Fill-Prediction" -- rested reach
 ns.DIVIDER_ATLAS = "ui-hud-experiencebar-divider" -- Camelot segment ticks
 ns.FLARE_XP_ATLAS = "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
 ns.FLARE_RESTED_ATLAS = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
@@ -365,7 +381,7 @@ ns.STANDING_NAMES = {
 }
 
 local frame = CreateFrame("Frame", "VocXPFrame", UIParent)
-frame:SetSize(ns.BAR_WIDTH, ns.FRAME_HEIGHT)
+frame:SetSize(ns.BAR_WIDTH, ns.ART_HEIGHT)
 frame:SetMovable(true)
 frame:SetClampedToScreen(true)
 frame:EnableMouse(true) -- hover tooltip always; lock gates dragging, not looking
@@ -403,26 +419,26 @@ local bg = bar:CreateTexture(nil, "BACKGROUND")
 bg:SetAllPoints(bar)
 setAtlasOrHide(bg, ns.BG_ATLAS, false)
 
+-- Rested reach wears the native prediction fill: the same atlas
+-- Blizzard's ExhaustionLevelFillBar wears, bottom-anchored at the
+-- native height, cropped from the left. No tint; the atlas carries
+-- its own color. A client without the atlas hides the layer.
 local restFill = bar:CreateTexture(nil, "ARTWORK", nil, -1)
-restFill:SetPoint("LEFT", bar, "LEFT", 0, 0)
-restFill:SetPoint("TOP", bar, "TOP", 0, 0)
-restFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
-restFill:SetWidth(0)
--- Blizzard's own bar grain under a blue tint: atlas fills all read
--- purple-family, and a flat color lost the texture. The classic statusbar
--- file is neutral grain, so the tint renders true on both clients.
-restFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-restFill:SetVertexColor(COLORS.rest[1], COLORS.rest[2], COLORS.rest[3])
+restFill:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
+restFill:SetSize(0, ns.FILL_HEIGHT)
+local restOk = setAtlasOrHide(restFill, ns.PREDICTION_ATLAS, false)
 restFill:Hide()
 
+-- Banked quest XP has no native counterpart, so it borrows the
+-- prediction grain in gold: the same shading language as rested
+-- reach, reading as one overlay family instead of a foreign slab.
 local questFill = bar:CreateTexture(nil, "ARTWORK", nil, 0)
-questFill:SetPoint("TOP", bar, "TOP", 0, 0)
-questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
-questFill:SetWidth(0)
--- Banked quest XP wears the same classic grain under a deeper gold tint:
--- the flat slab read correct but foreign next to the native fills.
-questFill:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-questFill:SetVertexColor(COLORS.quest[1], COLORS.quest[2], COLORS.quest[3])
+questFill:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", 0, 0)
+questFill:SetSize(0, ns.FILL_HEIGHT)
+local questOk = setAtlasOrHide(questFill, ns.PREDICTION_ATLAS, false)
+if questOk then
+  questFill:SetVertexColor(ns.rgb(COLORS.quest))
+end
 questFill:Hide()
 
 -- The stroke around the bar and the rested pip: the same two atlas
@@ -436,16 +452,61 @@ local pip = bar:CreateTexture(nil, "OVERLAY", nil, 1)
 pip:SetSize(10, 14)
 local pipOk = setAtlasOrHide(pip, ns.PIP_ATLAS, false)
 pip:Hide()
--- Unknown font objects error at creation, so the label resolves its
--- white Friz face with a fallback to the gold one.
+-- Unknown font objects error at creation, so the label wears the
+-- native TextStatusBar face with a small-face fallback.
 local function makeFont(parent, template, fallback)
   local ok, fs = pcall(parent.CreateFontString, parent, nil, "OVERLAY", template)
   if ok and fs ~= nil then return fs end
   return parent:CreateFontString(nil, "OVERLAY", fallback)
 end
-local barText = makeFont(bar, "GameFontHighlight", "GameFontNormal")
+local barText = makeFont(bar, "TextStatusBarText", "GameFontNormalSmall")
 barText:SetPoint("CENTER", bar, "CENTER", 0, 1)
 barText:SetShadowOffset(1, -1)
+-- Hover-only, like the native ShowText/HideText: the bar reads clean
+-- until the player asks it a question.
+barText:Hide()
+
+function ns.showBarLabel()
+  barText:Show()
+end
+
+function ns.hideBarLabel()
+  barText:Hide()
+end
+
+-- Show and hide ride the native fade: the container fades over half a
+-- second on bar switches. A client without the fader shows and hides
+-- at once. The hide is generation-guarded, so a quick re-show never
+-- eats a delayed hide.
+local hideGen = 0
+
+function ns.barShown(shown)
+  if shown then
+    hideGen = hideGen + 1
+    if not frame:IsShown() then
+      frame:SetShown(true)
+      if type(UIFrameFadeIn) == "function" then
+        pcall(UIFrameFadeIn, frame, 0.5, 0, 1)
+      end
+    end
+    return
+  end
+  if not frame:IsShown() then return end
+  if type(UIFrameFadeOut) ~= "function" then
+    frame:SetShown(false)
+    return
+  end
+  hideGen = hideGen + 1
+  local gen = hideGen
+  pcall(UIFrameFadeOut, frame, 0.5, 1, 0)
+  if type(C_Timer) == "table" and type(C_Timer.After) == "function" then
+    pcall(C_Timer.After, 0.5, function()
+      if gen == hideGen then frame:SetShown(false) end
+    end)
+  else
+    frame:SetShown(false)
+  end
+end
 
 -- Snap every region to the pixel grid: Blizzard rounds layout natively,
 -- so fractional widths and drag positions render crisp instead of blurred.
@@ -462,20 +523,6 @@ snapRegion(questFill)
 snapRegion(frameTex)
 snapRegion(pip)
 snapRegion(barText)
-
--- The rate line under the art zone: XP/hr and time-to-level, always visible.
-local rate = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-rate:SetPoint("TOP", frame, "TOP", 0, -(ns.ART_HEIGHT + 5))
-rate:SetShadowOffset(1, -1)
-snapRegion(rate)
-
--- The stats line under the rate line: ready quests and rested reach, always
--- visible like the mockup, in the standard gold face with the 1px shadow.
-local sub = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-sub:SetPoint("TOP", rate, "BOTTOM", 0, -2)
-sub:SetShadowOffset(1, -1)
-snapRegion(sub)
-sub:Hide()
 
 -- Native geometry ------------------------------------------------------
 -- The native bar is not one size: Mainline seats a 571x17 container
@@ -562,7 +609,7 @@ function ns.applyGeometry()
     return geo
   end
   appliedGeo = geo
-  frame:SetSize(geo.width, ns.FRAME_HEIGHT)
+  frame:SetSize(geo.width, ns.ART_HEIGHT)
   bar:SetSize(geo.troughW, geo.troughH)
   frameTex:SetSize(geo.width, ns.ART_HEIGHT)
   local ticks = geo.segments - 1
@@ -592,29 +639,100 @@ local mode = "xp" -- "xp", "rep", or "dormant"; derived from the capped snapshot
 local function resetTrackers()
   rateTracker = ns.newTracker(GetTime())
   etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
+  ns.clearSummary() -- observation restarts: the old burst never reports
 end
 
-local function warMode()
-  return type(C_PvP) == "table"
-    and type(C_PvP.IsWarModeDesired) == "function"
-    and C_PvP.IsWarModeDesired()
+-- Net gain summary (Plumber's LootUI pattern, original code: a 0.15s
+-- display queue merges deferred balance deltas into one net line).
+-- Gains arriving in a burst (dungeon packs, mass turn-ins) or mid-fight
+-- share one deferred chat line instead of one line each. Awards still
+-- land in the trackers at once: only this line waits, never the data.
+ns.SUMMARY_QUIET = 0.15 -- stillness before a burst reports, seconds
+local summaryAcc = { count = 0, xp = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
+
+-- Busy window: combat lockdown. A missing API never reads as busy.
+function ns.inCombat()
+  if type(InCombatLockdown) == "function" and InCombatLockdown() then return true end
+  return false
 end
 
--- The Enlisted buff starts at +10% but a Call to Arms for the
--- player's faction raises it, so read the live value instead of
--- hardcoding the base.
-local function warModeOffered()
-  local pct = 10
-  if type(C_PvP) == "table" and type(C_PvP.GetWarModeRewardBonus) == "function" then
-    local v = C_PvP.GetWarModeRewardBonus()
-    if type(v) == "number" and v >= 1 and v <= 100 then pct = v end
+function ns.clearSummary()
+  summaryAcc = { count = 0, xp = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
+end
+
+-- One gain joins the pending summary. A quiet spell (no new gains for
+-- SUMMARY_QUIET outside combat) closes the previous burst first, so a
+-- line never spans two separate bursts; combat holds the burst open.
+function ns.noteSummaryGain(now, kind, id, factionName, amount)
+  if not finite(now) or not finite(amount) or amount <= 0 then return false end
+  if kind ~= "xp" and kind ~= "rep" then return false end
+  if kind == "rep" then
+    if type(id) ~= "number" then return false end
+    if type(factionName) ~= "string" then factionName = "reputation" end
   end
-  return pct
+  if summaryAcc.count > 0 and not ns.inCombat()
+      and (now - summaryAcc.lastAt) >= ns.SUMMARY_QUIET then
+    ns.clearSummary()
+  end
+  summaryAcc.count = summaryAcc.count + 1
+  summaryAcc.lastAt = now
+  if ns.inCombat() then summaryAcc.busySeen = true end
+  if kind == "xp" then
+    summaryAcc.xp = summaryAcc.xp + amount
+  else
+    local bucket = summaryAcc.rep[id]
+    if bucket == nil then
+      bucket = { name = factionName, amount = 0 }
+      summaryAcc.rep[id] = bucket
+      summaryAcc.repOrder[#summaryAcc.repOrder + 1] = id
+    end
+    bucket.amount = bucket.amount + amount
+  end
+  return true
 end
 
-local function warModePct()
-  if not warMode() then return nil end
-  return warModeOffered()
+-- The net line for the pending burst, or nil when nothing reportable
+-- waits: single gains stay silent, so slow play gains no new chatter.
+function ns.formatSummary()
+  if summaryAcc.count < 2 then return nil end
+  local parts = {}
+  if summaryAcc.xp > 0 then
+    parts[#parts + 1] = "+" .. fmt(summaryAcc.xp) .. " XP"
+  end
+  local total, factions = 0, {}
+  for _, id in ipairs(summaryAcc.repOrder) do
+    local bucket = summaryAcc.rep[id]
+    if bucket ~= nil and bucket.amount > 0 then
+      total = total + bucket.amount
+      factions[#factions + 1] = bucket.name .. " " .. fmt(bucket.amount)
+    end
+  end
+  if total > 0 then
+    if #factions == 1 then
+      local only = summaryAcc.rep[summaryAcc.repOrder[1]]
+      parts[#parts + 1] = "+" .. fmt(total) .. " rep with " .. only.name
+    else
+      parts[#parts + 1] = "+" .. fmt(total) .. " rep (" .. table.concat(factions, ", ") .. ")"
+    end
+  end
+  if #parts == 0 then return nil end
+  local line = table.concat(parts, ", ")
+  if summaryAcc.busySeen then line = line .. " in combat" end
+  return line
+end
+
+-- Report the pending burst when it is due: at least two gains, no new
+-- gains for SUMMARY_QUIET, and no longer busy. Called from refresh(),
+-- so no new timer and no new event: the 1s ticker bounds the delay.
+function ns.flushSummary(now)
+  if summaryAcc.count < 2 then return false end
+  if ns.inCombat() then return false end
+  if not finite(now) or (now - summaryAcc.lastAt) < ns.SUMMARY_QUIET then return false end
+  local line = ns.formatSummary()
+  ns.clearSummary()
+  if line == nil then return false end
+  ns.say(line)
+  return true
 end
 
 -- Client flavor. The client loads exactly one of our tocs (the 1.x
@@ -637,61 +755,144 @@ function ns.clientFlavor()
   return "retail"
 end
 
-local function rested()
-  return GetXPExhaustion() ~= nil
+-- Bonus registry: the effects that change kill-XP gain, one entry per
+-- effect. Each entry names the effect, what it grants, and where it
+-- comes from, in the player's terms, plus the aura that marks it live
+-- and how to spot its granting item in the bags. Only verified effects
+-- get entries: Well Fed is the first, the food buff that raises kill
+-- XP. A short registry that is right beats a long one that is guessed,
+-- so the retail guesses are gone outright: War Mode, Mentored, and
+-- the Faire and Wickerman auras are unconfirmed on Forever (spell
+-- 24705 is the stamina-regen Invocation on Era-line data, not Grim
+-- Visage), and Joyous Journeys is Era-excluded by Blizzard's own
+-- notice. Eating does not feed rested on Era-line data (food restores
+-- health, Well Fed adds stamina and spirit, rested accrues in rest
+-- areas), so no bonus touches rested; the bar's own reach lines
+-- already report it.
+ns.REGISTRY = {
+  {
+    aura = 24870, -- one food's spell; the name read below finds every food's
+    name = "Well Fed", -- every food's buff shares the name, so the name query sees them all
+    label = "Well Fed",
+    grant = "kill XP",
+    source = "food",
+    food = true, -- any food item grants it; the bag hint looks for food, not one item
+  },
+}
+
+function ns.playerAura(spellID)
+  if type(C_UnitAuras) ~= "table" then return nil end
+  if type(C_UnitAuras.GetPlayerAuraBySpellID) ~= "function" then return nil end
+  return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
 end
 
--- Regalia of Fabled Adventurers, the heirloom set: 2 pieces cut Rested
--- consumption 30% (spell 341381), 6 pieces cut another 30% (341248),
--- 60% total. The bonuses are passive hidden auras, unreadable from
--- the aura container, so count heirloom-quality gear in the eight
--- counting slots instead; weapons and trinkets never count. Retail
--- only: heirlooms predate the set everywhere else, so the count means
--- Regalia only where the set exists (shown on retail, never Forever).
-local regaliaSlots = {
-  "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot",
-  "ChestSlot", "LegsSlot", "Finger0Slot", "Finger1Slot",
-}
-local HEIRLOOM_QUALITY = 7 -- Enum.ItemQuality.Heirloom, live + forever
+function ns.hasAura(spellID)
+  return ns.playerAura(spellID) ~= nil
+end
 
-function ns.regaliaPieces()
-  if type(C_PaperDollInfo) ~= "table"
-      or type(C_PaperDollInfo.GetInventorySlotInfo) ~= "function"
-      or type(GetInventoryItemQuality) ~= "function" then
-    return 0
+-- Name-based read: every food grants its own Well Fed spell, so one ID
+-- only ever covers one dish. The name query
+-- (C_UnitAuras.GetAuraDataBySpellName) finds whichever food's buff is
+-- live. Presence-gated and pcall-guarded like every other read here;
+-- nil when the API is absent or refuses.
+function ns.playerAuraByName(spellName)
+  if type(C_UnitAuras) ~= "table" then return nil end
+  if type(C_UnitAuras.GetAuraDataBySpellName) ~= "function" then return nil end
+  local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, "player", spellName)
+  if not ok then return nil end
+  return aura
+end
+
+-- One entry, every food: the name read finds any live Well Fed, and
+-- the ID stays as the fallback (spell names are client-locale, IDs are not).
+function ns.entryAura(entry)
+  if type(entry) ~= "table" then return nil end
+  if entry.name then
+    local named = ns.playerAuraByName(entry.name)
+    if named ~= nil then return named end
   end
-  local n = 0
-  for _, slotName in ipairs(regaliaSlots) do
-    local slot = C_PaperDollInfo.GetInventorySlotInfo(slotName)
-    if type(slot) == "number"
-        and GetInventoryItemQuality("player", slot) == HEIRLOOM_QUALITY then
-      n = n + 1
+  return ns.playerAura(entry.aura)
+end
+
+function ns.hasEntryAura(entry)
+  return ns.entryAura(entry) ~= nil
+end
+
+-- Remaining time on a live aura, in seconds, or nil when the client
+-- does not report one. Blizzard's own BuffFrame reads
+-- auraData.expirationTime against GetTime() the same way; a missing
+-- aura, a missing field, a missing clock, or an expired stamp all read
+-- no time, never an error. The stamp can also arrive secret, and a
+-- secret errors on compare and arithmetic in addon code:
+-- canaccessvalue gates both, presence-gated like every other read.
+local function timeLeft(aura)
+  -- The aura arrives resolved by the caller; only its stamp is read here.
+  if type(aura) ~= "table" then return nil end
+  local expires = aura.expirationTime
+  if canaccessvalue and not canaccessvalue(expires) then return nil end
+  if type(expires) ~= "number" or expires <= 0 then return nil end
+  if type(GetTime) ~= "function" then return nil end
+  local left = expires - GetTime()
+  if type(left) ~= "number" or left <= 0 then return nil end
+  return left
+end
+
+function ns.auraTimeLeft(spellID)
+  return timeLeft(ns.playerAura(spellID))
+end
+
+function ns.entryTimeLeft(entry)
+  return timeLeft(ns.entryAura(entry))
+end
+
+-- Food in the player's bags, read straight from the container API:
+-- bag 0 is the backpack, 1..NUM_BAG_SLOTS the worn bags. Without the
+-- container or item-info APIs the hint simply stays off.
+-- Consumable class 0, Food & Drink subclass 5; GetItemInfoInstant is
+-- the ledger-verified read.
+ns.FOOD_CLASS = 0
+ns.FOOD_SUBCLASS = 5
+
+local function isFoodLink(link)
+  if type(link) ~= "string" then return false end
+  if type(C_Item) ~= "table" or type(C_Item.GetItemInfoInstant) ~= "function" then
+    return false
+  end
+  local ok, _, _, _, _, _, classID, subClassID = pcall(C_Item.GetItemInfoInstant, link)
+  return ok and classID == ns.FOOD_CLASS and subClassID == ns.FOOD_SUBCLASS
+end
+
+function ns.foodInBags()
+  if type(C_Container) ~= "table"
+      or type(C_Container.GetContainerNumSlots) ~= "function"
+      or type(C_Container.GetContainerItemLink) ~= "function" then
+    return false
+  end
+  local bags = (type(NUM_BAG_SLOTS) == "number" and NUM_BAG_SLOTS) or 4
+  for bag = 0, bags do
+    local okSlots, slots = pcall(C_Container.GetContainerNumSlots, bag)
+    if okSlots and type(slots) == "number" then
+      for slot = 1, slots do
+        local okLink, link = pcall(C_Container.GetContainerItemLink, bag, slot)
+        if okLink and isFoodLink(link) then return true end
+      end
     end
   end
-  return n
+  return false
 end
 
-function ns.regaliaReduction(pieces)
-  if pieces >= 6 then return 60, "6pc" end
-  if pieces >= 2 then return 30, "2pc" end
-  return 0, nil
+-- Aura reads go blind in instances: the API returns nil there for
+-- present world-granted buffs, so the registry scan gates on this and
+-- says so instead of false absence.
+function ns.inInstance()
+  if type(IsInInstance) ~= "function" then return false end
+  return IsInInstance() == true
 end
-
--- Fixed-value XP-buff auras by spell ID: WHEE! (Darkmoon carousel and
--- coaster), Darkmoon Top Hat (separate aura, same +10%), Grim Visage /
--- Unburdened (Hallow's End Wickerman, one per faction).
-local xpBuffs = {
-  { id = 46668, label = "+10% WHEE!", pct = 10 },
-  { id = 136583, label = "+10% Darkmoon Top Hat", pct = 10 },
-  { id = 24705, label = "+10% Grim Visage", pct = 10 },
-  { id = 95987, label = "+10% Unburdened", pct = 10 },
-}
 
 -- Rep buffs, all +10%: the Faire pair, the Wickerman pair, and the
--- Pilgrim's Bounty Spirit of Sharing (rep-only). Top Hat, Wickerman,
--- and Sharing confirmed in-client; WHEE! on prose plus the confirmed
--- same-event analog (see the verification record).
-local repBuffs = {
+-- Pilgrim's Bounty Spirit of Sharing (rep-only). Reputation bonuses
+-- at max level keep the list they already had.
+ns.REP_BUFFS = {
   { id = 46668, label = "+10% WHEE!", pct = 10 },
   { id = 136583, label = "+10% Darkmoon Top Hat", pct = 10 },
   { id = 24705, label = "+10% Grim Visage", pct = 10 },
@@ -699,39 +900,9 @@ local repBuffs = {
   { id = 61849, label = "+10% Spirit of Sharing", pct = 10 },
 }
 
-local function playerAura(spellID)
-  if type(C_UnitAuras) ~= "table" then return nil end
-  if type(C_UnitAuras.GetPlayerAuraBySpellID) ~= "function" then return nil end
-  return C_UnitAuras.GetPlayerAuraBySpellID(spellID)
-end
-
 -- Every slash toggle confirms audibly (voc-addons principle 3).
 local function click(on)
   ns.play(on and "on" or "off")
-end
-
-local function hasAura(spellID) return playerAura(spellID) ~= nil end
-
--- Warband Mentored Leveling scales 5-25% with max-level characters;
--- the aura's first effect point carries the current value.
-local MENTORED_ID = 430191
-local function mentoredBonus()
-  local aura = playerAura(MENTORED_ID)
-  if not aura then return nil end
-  local pct = aura.points and aura.points[1]
-  if type(pct) == "number" and pct >= 1 and pct <= 100 then
-    return ("+%d%% Warband Mentored"):format(pct), pct
-  end
-  return "Warband Mentored", nil
-end
-
--- Aura reads go blind in instances (/dump-verified: the API returns
--- nil there for present world-granted buffs), so both lists gate
--- aura-derived lines on this and say so instead of false absence.
-local function inInstance()
-  if type(IsInInstance) ~= "function" then return false end
-  local inside = IsInInstance()
-  return inside == true
 end
 
 -- Highest value first; lines without a number trail in insertion
@@ -743,28 +914,20 @@ local function sortByValue(parts)
   end)
 end
 
--- Bonus lines, highest value first. Lines without a number (Rested,
--- an unreadable Mentored value) trail in their usual order; ties keep
--- insertion order, so the sort is stable.
--- The Rested line carries the live Regalia burn reduction: the set
--- multiplies Rested duration, not the XP rate, so it annotates Rested
--- instead of joining the valued list, where a 30 would read as +30% XP.
-local function restedLabel()
-  if ns.clientFlavor() ~= "retail" then return "Rested" end
-  local reduction, tier = ns.regaliaReduction(ns.regaliaPieces())
-  if reduction <= 0 then return "Rested" end
-  return ("Rested · -%d%% use (Regalia %s)"):format(reduction, tier)
-end
-
+-- Bonus lines, highest value first. Leveling lines come from the
+-- registry only: one line per live effect, with its remaining time
+-- when the client reports one. The bar already shows rested reach,
+-- so Rested has no line here; effects the client cannot confirm
+-- have no entry at all.
 local function bonusParts()
   local parts = {}
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
   if mode == "rep" then
-    local restricted = inInstance()
-    for _, buff in ipairs(repBuffs) do
-      if not restricted and hasAura(buff.id) then add(buff.pct, buff.label) end
+    local restricted = ns.inInstance()
+    for _, buff in ipairs(ns.REP_BUFFS) do
+      if not restricted and ns.hasAura(buff.id) then add(buff.pct, buff.label) end
     end
     local tracked = ns.repTracked()
     local progress = tracked and ns.readRepProgress(tracked) or nil
@@ -774,89 +937,62 @@ local function bonusParts()
     for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
     return labels
   end
-  local wm = warModePct()
-  if wm then add(wm, ("+%d%% War Mode"):format(wm)) end
-  local restricted = inInstance()
-  local mentored, mentoredPct = nil, nil
-  if not restricted then mentored, mentoredPct = mentoredBonus() end
-  if mentored then add(mentoredPct, mentored) end
-  for _, buff in ipairs(xpBuffs) do
-    if not restricted and hasAura(buff.id) then add(buff.pct, buff.label) end
+  if not ns.inInstance() then
+    for _, entry in ipairs(ns.REGISTRY) do
+      if ns.hasEntryAura(entry) then
+        local left = ns.entryTimeLeft(entry)
+        if left then
+          add(nil, entry.label .. " · " .. entry.grant .. " (" .. ns.formatEta(left) .. " left)")
+        else
+          add(nil, entry.label .. " · " .. entry.grant)
+        end
+      end
+    end
   end
-  if rested() then add(nil, restedLabel()) end
   sortByValue(parts)
   local labels = {}
   for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
   return labels
 end
 
--- Buffs the player could be running but isn't: each names its value
--- and a short how-to. Event buffs list
--- year-round with their season tagged; no clean event-active check
--- exists to gate them on. Buffs without a quotable value
--- (Mentored) list with no number. Darkmoon's two buffs are
--- either/or, so only WHEE! is ever recommended. On Forever only
--- Rested is recommended: War Mode, Mentored, and the event buffs
--- are unconfirmed there, so suggesting them would be guessing.
--- Detection stays ungated on every client (a lit War Mode flag or
--- a present aura is real anywhere); only these suggestions gate.
--- Regalia progress is retail-only like the event buffs (the set does
--- not exist on Forever) and teaches the next threshold once at least
--- one heirloom is worn; zero worn is no signal anything is owned, so
--- it stays quiet. Equipment reads work in instances, so no gate there.
--- Confirm more via beta /dumps and extend the gate below.
+-- The missing half of the registry: one dimmed reminder per effect
+-- that is not live, naming where it comes from, with the in-bags hint
+-- when the granting food sits in the player's bags. No rested line
+-- here either; the bar already answers that. In instances the aura
+-- scan goes blind, so the scan line replaces the list instead of
+-- guessing absence.
 local function missingParts()
   local parts = {}
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
   end
-  local forever = ns.clientFlavor() == "forever"
   if mode == "rep" then
-    local repForever = ns.clientFlavor() == "forever"
-    local repRestricted = inInstance()
-    -- Forever recommends nothing: the event buffs are unconfirmed
-    -- there, the same gate the XP list applies.
-    if not repForever and not repRestricted then
-      if not hasAura(46668) and not hasAura(136583) then
-        add(10, "+10% WHEE! (Faire week)")
-      end
-      if not hasAura(24705) and not hasAura(95987) then
-        add(10, "+10% Wickerman (Hallow's End)")
-      end
-      if not hasAura(61849) then
-        add(10, "+10% Spirit of Sharing (Pilgrim's Bounty)")
-      end
+    if ns.inInstance() then
+      add(nil, "Aura scan unavailable in instances")
     end
-    if repRestricted and not repForever then add(nil, "Aura scan unavailable in instances") end
     sortByValue(parts)
     local labels = {}
     for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
     return labels
   end
-  if not forever and not warMode() then
-    local pct = warModeOffered()
-    add(pct, ("+%d%% War Mode (toggle in a capital)"):format(pct))
+  if ns.inInstance() then
+    add(nil, "Aura scan unavailable in instances")
+    sortByValue(parts)
+    local labels = {}
+    for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+    return labels
   end
-  local restricted = inInstance()
-  if not forever and not restricted and not playerAura(MENTORED_ID) then
-    add(nil, "Warband Mentored (needs a max-level character)")
-  end
-  if not forever and not restricted and not hasAura(46668) and not hasAura(136583) then
-    add(10, "+10% WHEE! (Faire week)")
-  end
-  if not forever and not restricted and not hasAura(24705) and not hasAura(95987) then
-    add(10, "+10% Wickerman (Hallow's End)")
-  end
-  if not rested() then add(nil, "Rested (rest in town)") end
-  if not forever then
-    local pieces = ns.regaliaPieces()
-    if pieces == 1 then
-      add(nil, "-30% Rested use (Regalia 2pc, one more heirloom)")
-    elseif pieces >= 2 and pieces < 6 then
-      add(nil, ("-60%% Rested use (Regalia 6pc, %d/6 worn)"):format(pieces))
+  local bagged = nil
+  for _, entry in ipairs(ns.REGISTRY) do
+    if not ns.hasEntryAura(entry) then
+      local hint = "eat " .. entry.source
+      if entry.food then
+        if bagged == nil then bagged = ns.foodInBags() end
+        if bagged then hint = entry.source .. " in bags" end
+      end
+      add(nil, entry.label .. " · " .. entry.grant .. " (" .. hint .. ")")
     end
   end
-  if restricted and not forever then add(nil, "Aura scan unavailable in instances") end
   sortByValue(parts)
   local labels = {}
   for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
@@ -877,6 +1013,9 @@ function ns.barSegments(snap, restedXp, questXp)
   if not ns.validateSnapshot(snap) or snap.capped then return nil end
   local r = (type(restedXp) == "number" and restedXp > 0) and restedXp or 0
   local q = (type(questXp) == "number" and questXp > 0) and questXp or 0
+  -- Overflow is native-semantics only: (xp + rested) / req, ignoring
+  -- the custom quest overlay the native bar never knew.
+  local overflowed = (snap.xp + r) / snap.req > 1
   local progress = math.max(0, math.min(1, snap.xp / snap.req))
   local questEnd = math.max(progress, math.min(1, (snap.xp + q) / snap.req))
   local restedEnd = math.max(questEnd, math.min(1, (snap.xp + q + r) / snap.req))
@@ -885,6 +1024,7 @@ function ns.barSegments(snap, restedXp, questXp)
     restedEnd = restedEnd,
     questEnd = questEnd,
     hasRested = r > 0,
+    restedOverflow = overflowed,
     hasQuest = q > 0,
     pct = progress * 100,
     restedPct = r / snap.req * 100,
@@ -1434,7 +1574,6 @@ local function refreshRep(o)
   ns.applyGeometry()
   ns.maybeSwitchRep()
   local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
-  local est = repEstimate(progress)
   if progress then
     if type(bar.SetAnimatedValues) == "function" then
       bar:SetAnimatedValues(progress.have, 0, progress.need, progress.level)
@@ -1459,22 +1598,16 @@ local function refreshRep(o)
   questFill:Hide()
   pip:Hide()
   applyNativeBar()
-  rate:SetText(ns.titleText(est))
-  local stats = ns.repStatsLine(progress)
-  if stats then
-    sub:SetText(stats)
-    sub:Show()
-  else
-    sub:Hide()
-  end
-  frame:SetShown(o.shown)
+  ns.barShown(o.shown)
 end
 
 local function refresh()
   local o = opts()
   local now = GetTime()
+  -- Bursts report here: deferred through combat, netted after 0.15s of quiet.
+  ns.flushSummary(now)
   if mode == "dormant" then
-    frame:SetShown(false)
+    ns.barShown(false)
     applyNativeBar()
     return
   end
@@ -1504,11 +1637,14 @@ local function refresh()
       bar:SetValue(baseline.xp)
     end
     barText:SetText(ns.barLabel(baseline, seg))
-    local isRested = seg.hasRested
+    local isRested = seg ~= nil and seg.hasRested
     applyBarArt(isRested and ns.RESTED_ATLAS or ns.XP_ATLAS,
       isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
       isRested and ns.LEVELUP_RESTED_ATLAS or ns.LEVELUP_XP_ATLAS)
-    if isRested then
+    -- Native hides the prediction fill when rested overflows the bar,
+    -- but only on the clients that say so: Mainline hides it, Camelot
+    -- keeps the bar full. A missing API keeps the old behavior.
+    if isRested and restOk and not (seg.restedOverflow and not ns.restedOverflowShown()) then
       restFill:SetWidth(seg.restedEnd * geo.troughW)
       -- Crop, never stretch: the grain maps across the full bar width,
       -- so each span keeps its native shading at any width.
@@ -1517,12 +1653,10 @@ local function refresh()
     else
       restFill:Hide()
     end
-    if seg.questEnd > seg.progress then
+    if seg ~= nil and questOk and seg.questEnd > seg.progress then
       questFill:ClearAllPoints()
-      questFill:SetPoint("LEFT", bar, "LEFT", seg.progress * geo.troughW, 0)
-      questFill:SetPoint("TOP", bar, "TOP", 0, 0)
-      questFill:SetPoint("BOTTOM", bar, "BOTTOM", 0, 0)
-      questFill:SetWidth((seg.questEnd - seg.progress) * geo.troughW)
+      questFill:SetPoint("BOTTOMLEFT", bar, "BOTTOMLEFT", seg.progress * geo.troughW, 0)
+      questFill:SetSize((seg.questEnd - seg.progress) * geo.troughW, ns.FILL_HEIGHT)
       questFill:SetTexCoord(seg.progress, seg.questEnd, 0, 1)
       questFill:Show()
     else
@@ -1539,15 +1673,18 @@ local function refresh()
     end
   end
   applyNativeBar()
-  rate:SetText(ns.titleText(est))
-  local stats = seg and ns.subStatsLine(seg, questCount) or nil
-  if stats then
-    sub:SetText(stats)
-    sub:Show()
-  else
-    sub:Hide()
+  ns.barShown(o.shown)
+end
+
+-- Native hides the prediction fill when rested overflows the bar, but
+-- only on the clients that say so: Mainline hides it, Camelot keeps
+-- the bar full. A missing API keeps the old behavior and shows it.
+function ns.restedOverflowShown()
+  if type(ShouldRestedXpBarDisplayWhenOverflowing) == "function" then
+    local ok, show = pcall(ShouldRestedXpBarDisplayWhenOverflowing)
+    if ok then return show and true or false end
   end
-  frame:SetShown(o.shown)
+  return true
 end
 
 -- The tooltip carries the engine the bar replaced: the rate line, the
@@ -1630,6 +1767,7 @@ function ns.showTip()
         COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
     end
   end
+  GameTooltip:AddLine("Bonuses", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   local bonuses = bonusParts()
   if #bonuses == 0 then
     GameTooltip:AddLine("No XP bonus", COLORS.red[1], COLORS.red[2], COLORS.red[3], true)
@@ -1649,14 +1787,15 @@ end
 -- Modes ------------------------------------------------------------------
 -- Leveling characters track XP; max-level characters track reputation
 -- (or go dormant when repMode is off). Each mode owns its event set;
--- entering-world, cap-change, and aura signals stay registered in
+-- entering-world, cap-change, regen, and aura signals stay registered in
 -- every active mode. Entering a mode restarts observation: a rate
 -- never spans two different progressions.
 local ticker
 local xpEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "PLAYER_EQUIPMENT_CHANGED",
   "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
-  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE" }
-local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", "FACTION_STANDING_CHANGED" }
+  "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE",
+  "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
+local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", "FACTION_STANDING_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
 
 local function setEvents(list, on)
   for _, e in ipairs(list) do
@@ -1700,7 +1839,7 @@ end
 
 local function enterDormant()
   mode = "dormant"
-  frame:SetShown(false)
+  ns.barShown(false)
   paused = false
   if ticker then ticker:Cancel() ticker = nil end
   setEvents(xpEvents, false)
@@ -1838,6 +1977,7 @@ local function onRep(gainedID, updatedStanding, renownLevel)
           local stamp = GetTime()
           ns.addAward(rateTracker, stamp, award)
           ns.addAward(etaTracker, stamp, award)
+          ns.noteSummaryGain(stamp, "rep", repFactionID, snap.name, award)
         end
       end
       repBaseline = snap
@@ -1863,6 +2003,7 @@ local function onXP()
       local stamp = GetTime()
       ns.addAward(rateTracker, stamp, gained)
       ns.addAward(etaTracker, stamp, gained)
+      ns.noteSummaryGain(stamp, "xp", nil, nil, gained)
     end
   end
   baseline = snap
@@ -1974,6 +2115,7 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
       activateMode(snap)
     end
     if mode == "xp" then ns.scanQuestXp() end
+    ns.checkRivals() -- a loaded rival bar warns once here; never fought
     if mode ~= "dormant" and o.hideDefault and o.shown and not o.barAnnounced then
       o.barAnnounced = true
       ns.say("the default XP bar hides while VocXP shows (/vxp config to change it)")
@@ -1999,8 +2141,8 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
     -- anything here and event order cannot double-count it.
     -- PLAYER_EQUIPMENT_CHANGED, UPDATE_EXHAUSTION, and
     -- PLAYER_UPDATE_RESTING fall through the same way: a gear swap or
-    -- a rest change only re-renders, which refreshes the Regalia,
-    -- rested, and quest lines at once.
+    -- a rest change only re-renders, which refreshes the rested
+    -- and quest lines at once.
   end
   refresh()
 end)
@@ -2018,8 +2160,9 @@ frame:SetScript("OnDragStop", function()
   local point, _, _, x, y = frame:GetPoint(1)
   o.point, o.x, o.y = point, math.floor(x + 0.5), math.floor(y + 0.5)
 end)
-frame:SetScript("OnEnter", function() ns.showTip() end)
+frame:SetScript("OnEnter", function() ns.showBarLabel() ns.showTip() end)
 frame:SetScript("OnLeave", function()
+  ns.hideBarLabel()
   if type(GameTooltip) == "table" then GameTooltip:Hide() end
 end)
 
@@ -2043,6 +2186,31 @@ function ns.setLocked(on)
   refresh()
   click(o.locked)
   ns.say(o.locked and "locked" or "unlocked, drag to move")
+end
+
+-- Rival XP/reputation bars. Other addons are guests (FAMILY.md): when an
+-- addon known to paint its own XP or reputation bar is loaded, say so
+-- once and suggest ours hide. Never touch the rival: no disable, no
+-- hiding its frames, no fighting it.
+-- Evidence: ElvUI's experience databars (tukui-org/ElvUI wiki,
+-- "performance optimization retail"); Bartender4's bundled XP/Reputation
+-- bar (CurseForge listing); Dominos' bundled XP bar (Experiencer's note
+-- to "use Dominos or Bartender" to hide the Blizzard XP bar).
+ns.RIVALS = { "ElvUI", "Bartender4", "Dominos" }
+local rivalsWarned = false
+function ns.checkRivals()
+  if rivalsWarned then return false end
+  if not opts().shown or mode == "dormant" then return false end
+  if type(C_AddOns) ~= "table" or type(C_AddOns.IsAddOnLoaded) ~= "function" then return false end
+  local hit = nil
+  for _, addon in ipairs(ns.RIVALS) do
+    local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, addon)
+    if ok and loaded then hit = addon break end
+  end
+  if hit == nil then return false end
+  rivalsWarned = true
+  ns.say(hit .. " is loaded: two XP bars may show (/vxp hides ours)")
+  return true
 end
 
 -- Addon compartment (FAMILY.md "Addon compartment"): the toc names
@@ -2079,6 +2247,7 @@ ns.HELP = {
   "/vxp lock      lock or unlock the position",
   "/vxp pause     pause or resume tracking",
   "/vxp reset     restart the session",
+  "/vxp rep       reputation tracking on or off",
   "/vxp config    open Settings > AddOns > VocXP",
   "/vxp help      this list (/vocxp works too)",
 }
@@ -2118,6 +2287,18 @@ SlashCmdList.VOCXP = function(msg)
     if mode == "rep" then repBaseline = repFactionID and ns.readRepProgress(repFactionID) or nil end
     click(true)
     ns.say("session reset")
+  elseif msg == "rep" then
+    local o = opts()
+    o.repMode = not o.repMode
+    if o.repMode then
+      -- On at cap wakes rep mode at once; leveling picks it up at the cap.
+      activateMode(readSnapshot())
+    elseif mode == "rep" then
+      enterDormant()
+    end
+    refresh()
+    click(o.repMode)
+    ns.say(o.repMode and "reputation tracking on" or "reputation tracking off")
   elseif msg == "config" then
     ns.openConfig()
   else

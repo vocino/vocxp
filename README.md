@@ -1,8 +1,7 @@
 # VocXP
 
-Leveling an alt and wondering if your XP rate is any good, or whether
-you left War Mode off again. VocXP answers both with one elegant
-experience bar: your level progress with rested XP and
+Leveling an alt and wondering if your XP rate is any good. VocXP answers
+with one elegant experience bar: your level progress with rested XP and
 ready-to-turn-in quest XP overlaid, hiding Blizzard's default bar
 while it shows. Hover for XP per hour, time to the next level, and
 every XP bonus you are running, plus the ones you are missing and
@@ -23,13 +22,14 @@ same package runs on Retail and on the Forever client.
 A single XP bar built from Blizzard's own bar art and animated bar template, so gains sweep, dings flash, and the rested pip rides like the default bar. Drag it anywhere;
 it remembers where you put it, and it drags during Edit Mode sessions
 even when locked. The addon compartment on the minimap toggles it
-too. The label reads level, current and required XP, and percent:
+too. Hover the bar and the label reads level, current and required XP,
+and percent:
 
 ```
 10  45k/100k (45%)
 ```
 
-Under the bar, a rate line keeps XP/hr and time-to-level on screen (`144k XP/hr · 25m`), and a stats line keeps ready quests and rested reach below it (`2 quests ready: 5% · Rested: 6%`), no hover needed. On the bar itself, progress, quest turn-ins, and rested XP stack in the order you would play them, each ending in a hard edge: native XP purple, then the prediction material tinted pending-gain gold for banked quest XP, then prediction blue for rested reach, with the rested pip marking where rested runs out.
+On the bar itself, progress, quest turn-ins, and rested XP stack in the order you would play them, each ending in a hard edge: native XP purple, then the prediction fill borrowed in gold for banked quest XP, then the native prediction fill for rested reach, with the rested pip marking where rested runs out. When rested overflows the bar the native client hides the reach; the bar follows that rule where the client states one.
 Hover the bar for the payoff, refreshed every second: XP per hour
 over the trailing ten minutes, plus time to next level
 (`144k XP/hr · 25m`). The forecast runs at your
@@ -44,61 +44,53 @@ window is empty, with the headline reading `0 XP/hr`.
 Warming up owns the second line until the window fills, so
 idle only ever appears beside a full window. Then rested and
 quest reach (`Rested: 30% of level`, `2 quests ready: 5% of
-level`), one line per active bonus, and gray lines naming the
-bonuses you are missing, each with its value and a short
-how-to:
+level`), one line per active bonus, and a gray line naming the
+bonus you are missing and how to get it:
 
 ```
-+20% Warband Mentored
-+10% War Mode
-Rested
-+10% WHEE! (Faire week)
-+10% Wickerman (Hallow's End)
--60% Rested use (Regalia 6pc, 4/6 worn)
+Well Fed · kill XP (10m left)
 ```
 
-Bonuses read live: War Mode (live
-Enlisted value, +10% base, higher under Call to Arms),
-Warband Mentored Leveling with your current %, WHEE! and Darkmoon
-Top Hat (+10%, Darkmoon, either/or), Grim Visage / Unburdened (+10%,
-Hallow's End), and Rested. When worn heirlooms earn the Regalia of
-Fabled Adventurers set, the Rested line carries the live burn
-reduction (`Rested · -30% use (Regalia 2pc)`): the set stretches
-Rested instead of raising the rate, so it annotates Rested rather
-than joining the valued list. No bonus, no mystery: it says "No XP
-bonus" so you know to fix it.
+Bonuses read live from a short verified-only registry: Well Fed,
+the food buff that raises kill XP. Every food grants its own Well Fed
+spell, so the entry matches by name first (with the spell ID as the
+locale-proof fallback) and carries its remaining time when the client
+reports one. Missing it, the gap names the fix (`Well Fed · kill XP
+(eat food)`, or `food in bags` when food sits in your bags). No bonus,
+no mystery: it says "No XP bonus" so you know to fix it. A short
+registry that is right beats a long one that is guessed, so unverified
+event and mode buffs have no entry at all; rested needs none either,
+since the bar's own reach lines already report it.
 
 ```
 /vxp           show or hide the bar
 /vxp lock      lock or unlock the position
 /vxp pause     pause or resume tracking
 /vxp reset     restart the session
+/vxp rep       reputation tracking on or off
 /vxp config    open Settings > AddOns > VocXP
 /vxp help      this list (/vocxp works too)
 ```
 
 In dungeons and other instances the game hides world-granted
-auras from addons, so aura lines pause there with an honest note
-instead of pretending your buffs expired; War Mode and Rested
-keep reporting live.
+auras from addons, so the bonus scan pauses there with an honest note
+instead of pretending your buffs expired.
 
-On World of Warcraft Forever only Rested is ever suggested: War
-Mode, Warband Mentored, and the event buffs are unconfirmed
-there, so the addon shows them when active but never recommends
-them. Regalia never appears there: the heirloom set is retail-only.
-The bar, rate, and forecast work the same on both clients.
-Reputation mode works there too, minus rep buff recommendations
-(all unconfirmed there).
+On World of Warcraft Forever the registry reads the same: the name
+query, the ID fallback, the remaining time, and the bag hint are all
+verified on both clients. The bar, rate, and forecast work the same
+on both clients. Reputation mode works there too.
+Reputation bonuses at max level keep the list they already had.
 
 At max level the bar pivots to reputation automatically: it follows
 the watched faction ("Show as Experience Bar"), or the last faction
 to gain reputation when nothing is watched, with Rep/hr and time
-to the next rank on the rate line and the rank context below it
+to the next rank in the label and tooltip
 (`Honored · 33% to Revered`, `Renown 7 · 40% to 8`) across
 standard standings, Renown, Paragon, and friendship tracks,
 including a heads-up when a Paragon reward is pending. The fill takes
-the faction's standing color (blue for Renown); rested, quest, War
-Mode, Mentored, and Regalia lines retire with the XP side, and the
+the faction's standing color (blue for Renown); rested, quest,
+and XP-bonus lines retire with the XP side, and the
 bonus list narrows to the buffs that raise reputation (Faire and
 Wickerman pairs, Spirit of Sharing, and the live bonus flag). Turn it off
 with "Track reputation at max level" to restore the old dormancy:
@@ -131,9 +123,10 @@ fifteen-minute window gives the forecast, and neither is ever
 persisted, so a reload starts an honest fresh session. Rested XP
 is drawn from the client's exhaustion value, and the quest
 overlay sums the XP rewards of quests ready to turn in (saving
-and restoring your quest selection as it scans). Bonuses are
-read live from the client (War Mode, rested state, the mentored and
-holiday auras, heirloom count) and nothing is multiplied twice:
+and restoring your quest selection as it scans). The bonus registry
+reads live from the client (the Well Fed aura by name with an ID
+fallback, its remaining time, and food in bags) and nothing is
+multiplied twice:
 awarded XP already
 includes every bonus. The default bar stays hidden through a
 re-applied hide, and an open Edit Mode session tempers the lock
