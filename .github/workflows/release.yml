@@ -58,5 +58,6 @@ jobs:
           if [ "${#shown_new[@]}" -gt 0 ]; then msg+=$'\n\nNew'; for i in "${shown_new[@]}"; do msg+=$'\n'"$i"; done; fi
           if [ "${#shown_fix[@]}" -gt 0 ]; then msg+=$'\n\nFixed'; for i in "${shown_fix[@]}"; do msg+=$'\n'"$i"; done; fi
           if [ "$hidden" -gt 0 ]; then msg+=$'\n\n'"**+${hidden} more in the full release**"; fi
+          msg+=$'\n\n'"CurseForge: <https://www.curseforge.com/wow/addons/vocxp>"
           payload=$(jq -n --arg content "$msg" --arg username "VocXP" '{content: $content, username: $username}')
           curl -sS -X POST -H "Content-Type: application/json" -d "$payload" "${WEBHOOK}&wait=true" | jq -r '"posted changelog to discord (message " + .id + ")"'
