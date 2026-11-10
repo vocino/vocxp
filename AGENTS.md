@@ -2,7 +2,7 @@
 
 ## Code Map
 
-- `main.lua`: the whole addon: rolling XP rate, time-to-level, bonus list, the tooltip-styled readout, Settings panel, slash
+- `main.lua`: the whole addon: rolling XP/Rep rate, time-to-level, ding and rank-up announcements, bonus list, native-art bar with tooltip readout, Settings panel, slash, compartment
 - `VocXP.toc` / `VocXP_Camelot.toc`: addon metadata (dual toc, shared `main.lua`; no `RequiredDeps`)
 - `tests/run.lua`: stub-harness regression tests (`lua tests/run.lua`)
 - `FAMILY.md`: conventions shared by every Voc addon
