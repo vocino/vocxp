@@ -33,7 +33,7 @@ local function loadAddon(world)
   g._G = g
   g.print = function(...) world.printed[#world.printed + 1] = table.concat({...}, " ") end
   g.strtrim = function(s) return (tostring(s or ""):gsub("^%s*(.-)%s*$", "%1")) end
-  g.GetTime = function() return world.now end
+  if world.noClock then g.GetTime = nil else g.GetTime = function() return world.now end end
   g.UnitXP = function() return world.xp end
   g.UnitXPMax = function() return world.max end
   g.UnitLevel = function() return world.level end
@@ -3699,5 +3699,308 @@ do -- rep while leveling just flips the preference for the cap
   check("leveling stays in xp", w.frame.shown == true and w.frame.events.PLAYER_XP_UPDATE == true)
   w.env.SlashCmdList.VOCXP("rep")
   check("leveling rep flips back", ns.db.repMode == true)
+end
+-- 46. Data not loaded yet reads unknown, never errors.
+do -- a missing XP API reads unknown, never an error
+  local w = newWorld()
+  loadAddon(w)
+  w.env.UnitXP = nil
+  clientLoaded(w)
+  hover(w)
+  check("missing UnitXP unavailable", w.gametip.title == "Unavailable")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_XP_UPDATE")
+  hover(w)
+  check("missing UnitXP stays silent", w.gametip.title == "Unavailable")
+end
+do -- nil XP values read unknown, never an error
+  local w = newWorld()
+  w.xp = nil
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("nil xp unavailable", w.gametip.title == "Unavailable")
+end
+do -- nil level reads unknown, never an error
+  local w = newWorld()
+  w.level = nil
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("nil level unavailable", w.gametip.title == "Unavailable")
+end
+do -- a missing clock reads collecting, never an error
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 100
+  w.env.GetTime = nil
+  xpEvent(w)
+  hover(w)
+  check("missing clock collects", w.gametip.title == "Collecting data")
+end
+do -- a missing clock at load still loads and collects
+  local w = newWorld()
+  w.noClock = true
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("load without clock collects", w.gametip.title == "Collecting data")
+end
+do -- a missing reputation API reads untracked at cap, never an error
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  w.env.C_Reputation = nil
+  clientLoaded(w)
+  check("missing rep api untracked", w.label.text == "No faction tracked")
+end
+do -- a missing GUID loads and tracks, never counts as a switch
+  local w = newWorld()
+  w.guid = nil
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 100
+  xpEvent(w)
+  hover(w)
+  check("missing guid collects", w.gametip.title == "Collecting data")
+end
+
+-- 47. Secret values read as missing, never error or misbehave.
+do -- the guard itself: refused reads true, the rest false
+  local w = newWorld()
+  w.secretStamps[4242] = true
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("secret reads true", ns.isSecret(4242) == true)
+  check("plain reads false", ns.isSecret(5) == false)
+end
+do -- without the guard every read stays plain, never an error
+  local w = newWorld()
+  w.secretGuard = false
+  w.secretStamps[99] = true
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("no guard stays plain", ns.isSecret(99) == false)
+end
+do -- a refused XP value reads unavailable, never an error
+  local w = newWorld()
+  w.xp = 500
+  w.secretStamps[500] = true
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("secret xp unavailable", w.gametip.title == "Unavailable")
+  xpEvent(w)
+  hover(w)
+  check("secret xp stays silent", w.gametip.title == "Unavailable")
+end
+do -- a refused rested pool hides the reach, never an error
+  local w = newWorld()
+  w.restedXp = 300
+  w.secretStamps[300] = true
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp = 500
+  xpEvent(w)
+  check("secret rested hides fill", w.restFill.shown == false)
+  check("secret rested keeps xp", w.bar.animated[1] == 500)
+end
+do -- a refused quest payout is skipped, never an error
+  local w = newWorld()
+  setQuests(w, { { id = 1, xp = 400, ready = true } })
+  w.secretStamps[400] = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("secret quest hides overlay", w.questFill.shown == false)
+end
+do -- a refused standing reads untracked, never an error
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  w.secretStamps[15000] = true
+  loadAddon(w)
+  clientLoaded(w)
+  check("secret standing untracked", w.label.text == "No faction tracked")
+end
+do -- a refused level never pivots on a guess
+  local w = newWorld()
+  capWorld(w)
+  w.secretStamps[90] = true
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("secret level unavailable", w.gametip.title == "Unavailable")
+end
+do -- refused deltas resync instead of awarding
+  local w = newWorld()
+  w.secretStamps[150] = true
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local oldP = { id = 1, kind = "paragon", raw = 100, have = 100, need = 1000 }
+  local newP = { id = 1, kind = "paragon", raw = 150, have = 150, need = 1000 }
+  check("secret paragon delta nil", ns.repGain(oldP, newP) == nil)
+  local oldS = { id = 1, kind = "standing", level = 5, have = 100, need = 1000 }
+  local newS = { id = 1, kind = "standing", level = 5, have = 150, need = 1000 }
+  check("secret standing delta nil", ns.repGain(oldS, newS) == nil)
+  check("secret snapshot invalid", ns.validateSnapshot({ level = 10, xp = 150, req = 1000, capped = false }) == false)
+end
+
+-- 48. Combat: nothing forbidden, recovery clean after.
+do -- compartment clicks no-op in combat, work again after
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local shown = w.frame.shown
+  local sounds, printed = #w.sounds, #w.printed
+  w.inCombat = true
+  w.env.VocXP_CompartmentClick("VocXP", "LeftButton")
+  check("combat click keeps bar", w.frame.shown == shown)
+  check("combat click silent", #w.sounds == sounds)
+  w.env.VocXP_CompartmentClick("VocXP", "RightButton")
+  check("combat config silent", #w.printed == printed and #w.sounds == sounds)
+  w.inCombat = false
+  w.env.VocXP_CompartmentClick("VocXP", "LeftButton")
+  check("regen click toggles", w.frame.shown == (not shown) and #w.sounds == sounds + 1)
+end
+do -- slash toggles never error in combat and recover after
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.inCombat = true
+  w.env.SlashCmdList.VOCXP("")
+  check("combat slash flips", w.frame.shown == false)
+  w.env.SlashCmdList.VOCXP("")
+  check("combat slash flips back", w.frame.shown == true)
+  w.inCombat = false
+  w.env.SlashCmdList.VOCXP("pause")
+  check("regen pause works", w.printed[#w.printed] == "|cff66ccffVocXP|r: paused")
+  w.env.SlashCmdList.VOCXP("pause")
+  check("regen resume works", w.printed[#w.printed] == "|cff66ccffVocXP|r: resumed")
+end
+
+-- 49. Login, reload, and saved data: nothing lost, nothing invented.
+do -- another addon's load never touches our settings
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "SomeOtherAddon")
+  check("wrong addon ignored", ns.settingsBuilt == false)
+end
+do -- a missing SavedVariables table starts clean, never errors
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = nil
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("nil db starts clean", type(ns.db) == "table" and ns.db.shown == true)
+  check("nil db builds settings", ns.settingsBuilt == true)
+end
+do -- the restore replaces the file-top table instead of merging into it
+  local w = newWorld()
+  local ns = loadAddon(w)
+  ns.db.shown = false
+  w.env.VocXPDB = { locked = true }
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("restore replaces file-top", ns.db.locked == true and ns.db.shown == nil)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("entering world fills defaults", ns.db.shown == true and ns.db.locked == true)
+end
+do -- login retries the settings panel when it missed the load
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("load without settings skips", ns.settingsBuilt == false)
+  w.env.Settings = {
+    RegisterVerticalLayoutCategory = function(n)
+      w.settingsCat = n
+      return { GetID = function() return 42 end }
+    end,
+    RegisterAddOnCategory = function() w.settingsCatRegistered = true end,
+    RegisterAddOnSetting = function(_, var, key, tbl, typ, label, default)
+      w.settingsReg[#w.settingsReg + 1] =
+        { var = var, key = key, tbl = tbl, type = typ, label = label, default = default }
+      local s = {}
+      s.SetValueChangedCallback = function(_, fn) w.settingCallbacks[var] = fn end
+      return s
+    end,
+    CreateCheckbox = function() w.settingsChecks = w.settingsChecks + 1 end,
+    OpenToCategory = function(id) w.openedCategory = id end,
+  }
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  check("login builds settings", ns.settingsBuilt == true and w.settingsCat == "VocXP")
+end
+do -- unknown keys ride along for forward compatibility
+  local w = newWorld()
+  w.savedVars = { shown = false, futureKey = 7 }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("unknown keys preserved", ns.db.futureKey == 7 and ns.db.shown == false)
+end
+do -- an old partial profile fills the rest with defaults
+  local w = newWorld()
+  w.savedVars = { locked = true }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("old profile keeps saved", ns.db.locked == true)
+  check("old profile fills defaults", ns.db.shown == true and ns.db.repMode == true
+    and ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
+end
+
+-- 50. Character, zone, and group: switches reset, travel keeps, noise ignored.
+do -- a nil GUID never counts as a character switch
+  local w = newWorld()
+  w.guid = nil
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  w.now = w.now + 30
+  w.xp = 600
+  xpEvent(w)
+  hover(w)
+  check("nil guid keeps history", w.gametip.title:find("XP/hr", 1, true) ~= nil)
+end
+do -- a zone load on the same character keeps XP history
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  w.now = w.now + 30
+  w.xp = 600
+  xpEvent(w)
+  hover(w)
+  check("zone load keeps history", w.gametip.title:find("XP/hr", 1, true) ~= nil)
+end
+do -- group chatter is not a reset and never errors
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "GROUP_ROSTER_UPDATE")
+  w.now = w.now + 30
+  w.xp = 600
+  xpEvent(w)
+  hover(w)
+  check("group noise keeps history", w.gametip.title:find("XP/hr", 1, true) ~= nil)
+end
+
+-- 51. Midnight (retail today) and Forever read their own tocs, nothing assumed.
+do -- the shipped Midnight Interface version reads retail
+  local w = newWorld()
+  w.addonInterfaceVersion = 120105
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("midnight flavor", ns.clientFlavor() == "retail")
+  check("midnight queries own addon", w.queriedAddon == "VocXP")
 end
 print("tests/run.lua: " .. passed .. " checks passed")

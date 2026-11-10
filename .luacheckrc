@@ -45,7 +45,7 @@ read_globals = {
 }
 
 files["tests/**"] = {
-  std = "+lua54",
+  std = "max",
   globals = { "print" },
   read_globals = { "setfenv", "loadstring", "unpack" },
 }

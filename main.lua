@@ -127,8 +127,41 @@ function ns.compact(tr)
   tr.events, tr.head = fresh, 1
 end
 
+-- Secret values (Midnight): a numeric read the client refuses errors on
+-- compare and arithmetic in addon code. canaccessvalue gates every such
+-- read before it is touched; a missing API means no secrets exist there.
+function ns.isSecret(v)
+  if type(canaccessvalue) == "function" then
+    local ok, accessible = pcall(canaccessvalue, v)
+    if ok and accessible == false then return true end
+  end
+  return false
+end
+
 local function finite(v)
-  return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+  if type(v) ~= "number" then return false end
+  if ns.isSecret(v) then return false end
+  return v == v and v ~= math.huge and v ~= -math.huge
+end
+
+-- Monotonic clock, guarded: a missing GetTime (data not loaded yet)
+-- reads 0 instead of erroring; trackers started on 0 resync on the
+-- first real stamp.
+local function clock()
+  if type(GetTime) == "function" then
+    local ok, t = pcall(GetTime)
+    if ok and type(t) == "number" and not ns.isSecret(t) and t == t then return t end
+  end
+  return 0
+end
+
+-- Any-secret test for a group of numeric reads: one refused value
+-- rejects the whole row, never an error.
+local function anySecret(...)
+  for i = 1, select("#", ...) do
+    if ns.isSecret(select(i, ...)) then return true end
+  end
+  return false
 end
 
 -- Awards are stamped at receipt on a monotonic clock, so receipt order
@@ -665,16 +698,16 @@ end
 
 -- Session state. Both trackers and the baseline live here, never in
 -- SavedVariables: monotonic timestamps must not cross a reload.
-local rateTracker = ns.newTracker(GetTime())
-local etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
+local rateTracker = ns.newTracker(clock())
+local etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
 local baseline = nil
 local identity = nil
 local paused = false
 local mode = "xp" -- "xp", "rep", or "dormant"; derived from the capped snapshot, never toggled
 
 local function resetTrackers()
-  rateTracker = ns.newTracker(GetTime())
-  etaTracker = ns.newTracker(GetTime(), ns.ETA_WINDOW)
+  rateTracker = ns.newTracker(clock())
+  etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
   ns.clearSummary() -- observation restarts: the old burst never reports
 end
 
@@ -936,7 +969,9 @@ local function timeLeft(aura)
   if canaccessvalue and not canaccessvalue(expires) then return nil end
   if type(expires) ~= "number" or expires <= 0 then return nil end
   if type(GetTime) ~= "function" then return nil end
-  local left = expires - GetTime()
+  local ok, now = pcall(GetTime)
+  if not ok or not finite(now) then return nil end
+  local left = expires - now
   if type(left) ~= "number" or left <= 0 then return nil end
   return left
 end
@@ -1177,7 +1212,7 @@ function ns.scanQuestXp()
           and QL.ReadyForTurnIn(info.questID) then
         QL.SetSelectedQuest(info.questID)
         local xp = GetQuestLogRewardXP()
-        if type(xp) == "number" and xp > 0 then sum, n = sum + xp, n + 1 end
+        if finite(xp) and xp > 0 then sum, n = sum + xp, n + 1 end
       end
     end
     if type(sel) == "number" and sel ~= 0 then QL.SetSelectedQuest(sel) end
@@ -1192,10 +1227,16 @@ end
 -- hides the rested layer while XP gain is disabled, so do we; a
 -- missing API there means XP assumed enabled, never a missing bar.
 local function restedAmount()
-  if type(IsXPUserDisabled) == "function" and IsXPUserDisabled() then return nil end
+  -- A disabled-XP read that errors reads as enabled; exhaustion that is
+  -- missing, erroring, refused, or secret reads as no rested, never an error.
+  if type(IsXPUserDisabled) == "function" then
+    local ok, disabled = pcall(IsXPUserDisabled)
+    if ok and disabled then return nil end
+  end
   if type(GetXPExhaustion) ~= "function" then return nil end
-  local v = GetXPExhaustion()
-  if type(v) ~= "number" or v <= 0 then return nil end
+  local ok, v = pcall(GetXPExhaustion)
+  if not ok then return nil end
+  if not finite(v) or v <= 0 then return nil end
   return v
 end
 
@@ -1246,6 +1287,8 @@ function ns.repStandardProgress(fd, maxReaction)
   if not ns.validRepRow(fd) then return nil end
   maxReaction = maxReaction or ns.maxRepReaction()
   local r, lo, hi, cur = fd.reaction, fd.currentReactionThreshold, fd.nextReactionThreshold, fd.currentStanding
+  -- A refused (secret) threshold or standing rejects the row, never an error.
+  if anySecret(r, lo, hi, cur) then return nil end
   if type(r) ~= "number" or r < 1 or r ~= math.floor(r) then return nil end
   if type(lo) ~= "number" or type(hi) ~= "number" or type(cur) ~= "number" then return nil end
   local label = ns.standingName(math.min(r, maxReaction))
@@ -1267,6 +1310,7 @@ function ns.repRenownProgress(fd, major, hasMax)
   if not ns.validRepRow(fd) then return nil end
   if type(major) ~= "table" then return nil end
   local level, threshold = major.renownLevel, major.renownLevelThreshold
+  if anySecret(level, threshold, fd.currentStanding) then return nil end
   if type(level) ~= "number" or type(threshold) ~= "number" or threshold <= 0 then return nil end
   if type(fd.currentStanding) ~= "number" then return nil end
   local label = ("Renown %d"):format(math.floor(level))
@@ -1285,6 +1329,7 @@ end
 -- threshold; a pending reward pins the bar full. Never capped.
 function ns.repParagonProgress(fd, currentValue, threshold, hasRewardPending)
   if not ns.validRepRow(fd) then return nil end
+  if anySecret(currentValue, threshold) then return nil end
   if type(currentValue) ~= "number" or type(threshold) ~= "number" or threshold <= 0 then return nil end
   local have = currentValue % threshold
   if hasRewardPending then have = threshold end
@@ -1301,12 +1346,15 @@ function ns.repFriendshipProgress(fd, repInfo, rankInfo)
   if type(repInfo) ~= "table" or type(rankInfo) ~= "table" then return nil end
   local reaction = type(repInfo.reaction) == "string" and repInfo.reaction or "Friend"
   local level = type(rankInfo.currentLevel) == "number" and rankInfo.currentLevel or nil
+  -- A refused rank reads as unranked; the delta below stays a resync.
+  if level ~= nil and ns.isSecret(level) then level = nil end
   if repInfo.nextThreshold == nil then
     return { id = fd.factionID, name = fd.name, kind = "friendship",
       have = 1, need = 1, level = level, levelLabel = reaction,
       capLabel = reaction, capped = true, bonus = fd.hasBonusRepGain == true }
   end
   local lo, hi, cur = repInfo.reactionThreshold, repInfo.nextThreshold, repInfo.standing
+  if anySecret(lo, hi, cur) then return nil end
   if type(lo) ~= "number" or type(hi) ~= "number" or type(cur) ~= "number" then return nil end
   if hi <= lo or cur < lo then return nil end
   return { id = fd.factionID, name = fd.name, kind = "friendship",
@@ -1324,13 +1372,13 @@ function ns.repGain(old, new)
   if old.id ~= new.id or old.kind ~= new.kind then return nil end
   if new.capped then return nil end
   if new.kind == "paragon" then
-    if type(old.raw) ~= "number" or type(new.raw) ~= "number" then return nil end
+    if not finite(old.raw) or not finite(new.raw) then return nil end
     if new.raw >= old.raw then return new.raw - old.raw end
     return nil
   end
-  if type(old.level) ~= "number" or type(new.level) ~= "number" then return nil end
-  if type(old.have) ~= "number" or type(new.have) ~= "number" then return nil end
-  if type(old.need) ~= "number" or type(new.need) ~= "number" then return nil end
+  if not finite(old.level) or not finite(new.level) then return nil end
+  if not finite(old.have) or not finite(new.have) then return nil end
+  if not finite(old.need) or not finite(new.need) then return nil end
   if new.level == old.level then
     if new.have >= old.have then return new.have - old.have end
     return nil
@@ -1468,14 +1516,14 @@ local function scanStanding(R, id, standing)
       and type(R.GetFactionParagonInfo) == "function"
       and R.IsFactionParagonForCurrentPlayer(id) then
     local currentValue = R.GetFactionParagonInfo(id)
-    if type(currentValue) == "number" then return currentValue end
+    if finite(currentValue) then return currentValue end
     return nil
   end
   if type(C_GossipInfo) == "table"
       and type(C_GossipInfo.GetFriendshipReputation) == "function" then
     local repInfo = C_GossipInfo.GetFriendshipReputation(id)
-    if type(repInfo) == "table" and type(repInfo.friendshipFactionID) == "number"
-        and repInfo.friendshipFactionID > 0 and type(repInfo.standing) == "number" then
+    if type(repInfo) == "table" and finite(repInfo.friendshipFactionID)
+        and repInfo.friendshipFactionID > 0 and finite(repInfo.standing) then
       return repInfo.standing
     end
   end
@@ -1496,10 +1544,10 @@ function ns.scanRepGains()
       local fd = R.GetFactionDataByIndex(i)
       if ns.validRepRow(fd) then
         local standing = scanStanding(R, fd.factionID, fd.currentStanding)
-        if type(standing) == "number" then
+        if finite(standing) then
           local prev = repCache[fd.factionID]
           repCache[fd.factionID] = standing
-          if type(prev) == "number" and standing > prev and standing - prev > bestGain then
+          if finite(prev) and standing > prev and standing - prev > bestGain then
             bestID, bestGain = fd.factionID, standing - prev
           end
         end
@@ -1634,7 +1682,7 @@ local function repEstimate(progress)
       observedSeconds = 0, windowXp = 0, idleSeconds = nil,
       xpPerHour = nil, remainingXp = nil, etaSeconds = nil, unit = "Rep" }
   end
-  local now = GetTime()
+  local now = clock()
   local snap
   if progress.capped then
     snap = { level = 0, xp = 1, req = 1, capped = false }
@@ -1699,7 +1747,7 @@ end
 
 local function refresh()
   local o = opts()
-  local now = GetTime()
+  local now = clock()
   -- Bursts report here: deferred through combat, netted after 0.15s of quiet.
   ns.flushSummary(now)
   if mode == "dormant" then
@@ -1841,10 +1889,10 @@ function ns.showTip()
   if dragging then return end
   if type(GameTooltip) ~= "table" then return end
   if mode == "rep" then ns.showRepTip() return end
-  local est = ns.estimate(rateTracker, GetTime(), baseline, paused)
+  local est = ns.estimate(rateTracker, clock(), baseline, paused)
   -- The same longer ETA basis refresh() applies, so the tooltip and
   -- the bar never disagree about time-to-level.
-  local longEta = ns.etaSeconds(etaTracker, GetTime(), est.remainingXp or 0)
+  local longEta = ns.etaSeconds(etaTracker, clock(), est.remainingXp or 0)
   if est.etaSeconds and (est.remainingXp or 0) > 0 then
     est.etaSeconds = longEta or est.etaSeconds
   end
@@ -1977,18 +2025,30 @@ end
 function ns.effectiveMaxLevel()
   local latest, expansion, perPlayer
   if type(GetMaxLevelForLatestExpansion) == "function" then
-    latest = GetMaxLevelForLatestExpansion()
+    local ok, v = pcall(GetMaxLevelForLatestExpansion)
+    if ok then latest = v end
   end
   if type(GetMaxLevelForPlayerExpansion) == "function" then
-    expansion = GetMaxLevelForPlayerExpansion()
+    local ok, v = pcall(GetMaxLevelForPlayerExpansion)
+    if ok then expansion = v end
   end
-  if type(GetMaxPlayerLevel) == "function" then perPlayer = GetMaxPlayerLevel() end
-  if type(latest) ~= "number" or type(expansion) ~= "number" or type(perPlayer) ~= "number" then
-    if type(perPlayer) == "number" then return perPlayer end
+  if type(GetMaxPlayerLevel) == "function" then
+    local ok, v = pcall(GetMaxPlayerLevel)
+    if ok then perPlayer = v end
+  end
+  if not finite(latest) or not finite(expansion) or not finite(perPlayer) then
+    if finite(perPlayer) then return perPlayer end
     return nil
   end
-  local timerunning = type(PlayerIsTimerunning) == "function" and PlayerIsTimerunning()
-  local trial = type(IsTrialAccount) == "function" and IsTrialAccount()
+  local timerunning, trial = false, false
+  if type(PlayerIsTimerunning) == "function" then
+    local ok, v = pcall(PlayerIsTimerunning)
+    if ok and v then timerunning = true end
+  end
+  if type(IsTrialAccount) == "function" then
+    local ok, v = pcall(IsTrialAccount)
+    if ok and v then trial = true end
+  end
   local expansionMax = (timerunning and not trial) and latest or expansion
   return math.min(expansionMax, perPlayer)
 end
@@ -1999,16 +2059,30 @@ end
 -- zeroing, so max == 0 survives only as the last-resort fallback
 -- when no max-level API exists at all.
 function ns.isLevelCapped(level, max)
-  if type(level) ~= "number" then return false end
+  if not finite(level) then return false end
   local cap = ns.effectiveMaxLevel()
-  if type(cap) == "number" then return level >= cap end
-  return max == 0
+  if finite(cap) then return level >= cap end
+  if finite(max) then return max == 0 end
+  return false
 end
 
 local function readSnapshot()
-  local max, level = UnitXPMax("player"), UnitLevel("player")
+  -- Data not loaded yet: a missing API anywhere in the chain reads an
+  -- unknown snapshot, never an error. The estimator reports it as
+  -- unavailable and the bar paints nothing until real data lands.
+  if type(UnitXPMax) ~= "function" or type(UnitLevel) ~= "function"
+      or type(UnitXP) ~= "function" then
+    return { level = 0, xp = 0, req = 0, capped = false }
+  end
+  local okMax, max = pcall(UnitXPMax, "player")
+  local okLevel, level = pcall(UnitLevel, "player")
+  if not okMax or not okLevel then
+    return { level = 0, xp = 0, req = 0, capped = false }
+  end
   if ns.isLevelCapped(level, max) then return { level = level, xp = 0, req = 1, capped = true } end
-  return { level = level, xp = UnitXP("player"), req = max, capped = false }
+  local okXp, xp = pcall(UnitXP, "player")
+  if not okXp then return { level = 0, xp = 0, req = 0, capped = false } end
+  return { level = level, xp = xp, req = max, capped = false }
 end
 
 -- Rank-up line for the tracked faction: one chat fact when the new
@@ -2065,8 +2139,8 @@ local function notePayloadGain(factionID, updatedStanding)
       special = true
     end
   end
-  if not special and type(repCache[factionID]) == "number"
-      and type(updatedStanding) == "number"
+  if not special and finite(repCache[factionID])
+      and finite(updatedStanding)
       and updatedStanding <= repCache[factionID] then
     -- A loss or a no-op resyncs the cache like the scan: it never
     -- steals tracking.
@@ -2101,7 +2175,7 @@ local function onRep(gainedID, updatedStanding, renownLevel)
       if not paused then
         local award = ns.repGain(repBaseline, snap)
         if award then
-          local stamp = GetTime()
+          local stamp = clock()
           ns.addAward(rateTracker, stamp, award)
           ns.addAward(etaTracker, stamp, award)
           ns.noteSummaryGain(stamp, "rep", repFactionID, snap.name, award)
@@ -2129,7 +2203,7 @@ local function onXP()
   if not paused then
     local gained = ns.gain(baseline, snap)
     if gained then
-      local stamp = GetTime()
+      local stamp = clock()
       ns.addAward(rateTracker, stamp, gained)
       ns.addAward(etaTracker, stamp, gained)
       ns.noteSummaryGain(stamp, "xp", nil, nil, gained)
@@ -2238,16 +2312,22 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
     ns.ensureSettings()
     ns.subscribeEditMode()
     local o = opts()
-    frame:ClearAllPoints()
-    frame:SetPoint(o.point, UIParent, o.point, o.x, o.y)
+    pcall(frame.ClearAllPoints, frame)
+    pcall(frame.SetPoint, frame, o.point, UIParent, o.point, o.x, o.y)
     local snap = readSnapshot()
-    local id = UnitGUID("player")
-    local switched = id ~= identity
+    local id = nil
+    if type(UnitGUID) == "function" then
+      local ok, guid = pcall(UnitGUID, "player")
+      if ok and type(guid) == "string" then id = guid end
+    end
+    -- A missing GUID (data not loaded yet) never counts as a switch:
+    -- resetting on nil would wipe history on every zone load.
+    local switched = id ~= nil and id ~= identity
     if switched or mode == "dormant" then
       -- New character, first login, or waking from dormancy: fresh
       -- window and a fresh observation gate. Zone loads on the same
       -- character keep history; travel is tracked time.
-      identity = id
+      if id ~= nil then identity = id end
       resetTrackers()
       paused = false
     end
