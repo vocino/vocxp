@@ -66,7 +66,9 @@ lines already report it.
 
 Dinging (or earning a reputation rank) prints one chat line
 (`level 11 reached`, `rank up with Court: revered`); the level-up
-fanfare itself is the client's own sound.
+fanfare itself is the client's own sound. "Always show bar text"
+keeps the rate on the bar at all times (`13k XP/hr - 1h 10m`)
+instead of on hover only.
 
 ```
 /vxp           show or hide the bar
@@ -122,6 +124,7 @@ Settings > AddOns > VocXP, or `/vxp config`:
 - Track reputation at max level (default on)
 - Follow latest reputation gains (default off)
 - Lock the position (default off)
+- Always show bar text (default off)
 
 All are the same switches the slash line flips, and every change
 applies at once.

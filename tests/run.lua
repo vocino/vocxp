@@ -469,6 +469,7 @@ do -- fresh profile gets all defaults and hides the native bar
   check("fresh hideDefault defaults true", ns.db.hideDefault == true)
   check("fresh repMode defaults true", ns.db.repMode == true)
   check("fresh followLatest defaults false", ns.db.followLatest == false)
+  check("fresh alwaysShow defaults false", ns.db.alwaysShow == false)
   check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
   check("fresh frame shown", w.frame.shown == true)
   check("fresh native hidden", w.native.shown == false)
@@ -2183,6 +2184,70 @@ do
     w.printed[#w.printed] == "|cff66ccffVocXP|r: open Settings > AddOns > VocXP")
 end
 
+do -- unit: persistent bar text joins rate and long ETA with " - "
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("bar paused", ns.barText({ status = "paused" }) == "Paused")
+  check("bar capped", ns.barText({ status = "capped" }) == "Max level")
+  check("bar untracked", ns.barText({ status = "untracked" }) == "No reputation tracked")
+  check("bar rep-capped", ns.barText({ status = "rep-capped", capLabel = "Renown 12" }) == "Renown 12")
+  check("bar unavailable", ns.barText({ status = "unavailable" }) == "Unavailable")
+  check("bar collecting", ns.barText({ status = "collecting", xpPerHour = nil, etaSeconds = nil }) == "Collecting data")
+  check("bar rate only", ns.barText({ status = "warming-up", xpPerHour = 13000, etaSeconds = nil }) == "13k XP/hr")
+  check("bar rate and eta", ns.barText({ status = "ready", xpPerHour = 13000, etaSeconds = 4200 }) == "13k XP/hr - 1h 10m")
+  check("bar sub-hour", ns.barText({ status = "ready", xpPerHour = 9000, etaSeconds = 1500 }) == "9k XP/hr - 25m")
+  check("bar sub-minute", ns.barText({ status = "ready", xpPerHour = 9000, etaSeconds = 30 }) == "9k XP/hr - <1m")
+  check("bar hour exact", ns.barText({ status = "ready", xpPerHour = 9000, etaSeconds = 7200 }) == "9k XP/hr - 2h")
+  check("bar rep", ns.barText({ status = "ready", unit = "Rep", xpPerHour = 13000, etaSeconds = 4200 }) == "13k Rep/hr - 1h 10m")
+end
+do -- alwaysShow keeps the rate past hover-off and reverts on toggle-off
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 120
+  w.xp = 600
+  xpEvent(w)
+  check("rate hidden by default", w.label.shown == false)
+  ns.db.alwaysShow = true
+  w.settingCallbacks["VocXP_alwaysShow"]()
+  check("rate shows when on", w.label.shown == true and w.label.text == "18k XP/hr - 2m")
+  w.frame.scripts.OnLeave(w.frame)
+  check("rate survives leave", w.label.shown == true and w.label.text == "18k XP/hr - 2m")
+  ns.db.alwaysShow = false
+  w.settingCallbacks["VocXP_alwaysShow"]()
+  check("toggle off hides", w.label.shown == false)
+  check("toggle off reverts text", w.label.text == "10  600/1k (60%)")
+end
+do -- ticker refresh never hides hover text when the option is off
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 120
+  w.xp = 600
+  xpEvent(w)
+  hover(w)
+  check("hover shows level text", w.label.shown == true and w.label.text == "10  600/1k (60%)")
+  w.now = w.now + 60
+  w.xp = 700
+  xpEvent(w)
+  check("refresh keeps hover text", w.label.shown == true and w.label.text == "10  700/1k (70%)")
+end
+do -- alwaysShow paints Rep/hr in reputation mode
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.db.alwaysShow = true
+  w.now = w.now + 120
+  w.factions[1].standing = 15600
+  standingEvent(w, 101, 15600)
+  check("rep rate shows", w.label.shown == true and w.label.text == "18k Rep/hr - 18m")
+  w.frame.scripts.OnLeave(w.frame)
+  check("rep rate survives leave", w.label.shown == true)
+end
 -- 26. Native Settings panel: every option, bound to the live table,
 -- applied the moment it changes.
 do
@@ -2195,15 +2260,16 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("five options registered", keys.shown ~= nil and keys.hideDefault ~= nil
-    and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and #w.settingsReg == 5)
+  check("six options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+    and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and keys.alwaysShow ~= nil and #w.settingsReg == 6)
   check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
     and keys.hideDefault.tbl == w.env.VocXPDB)
-  check("five checkboxes", w.settingsChecks == 5)
+  check("six checkboxes", w.settingsChecks == 6)
   check("defaults match", keys.shown.default == true and keys.hideDefault.default == true
-    and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false)
+    and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false
+    and keys.alwaysShow.default == false)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 5)
+  check("built once", #w.settingsReg == 6)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)

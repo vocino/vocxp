@@ -62,7 +62,9 @@ local COLORS = ns.COLORS
 
 -- Defaults: the single source of truth (FAMILY.md "Settings"). A key
 -- holding the wrong type resets; unknown keys are left alone.
-local defaults = { shown = true, locked = false, hideDefault = true, repMode = true, followLatest = false, point = "BOTTOM", x = 0, y = 100 }
+local defaults = { shown = true, locked = false, hideDefault = true,
+  repMode = true, followLatest = false, alwaysShow = false,
+  point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local VALID_POINTS = {
   TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true,
@@ -310,6 +312,37 @@ function ns.formatEta(sec)
   return ("%dh%02dm"):format(h, r)
 end
 
+-- Long ETA for the persistent bar text: the same upward rounding as
+-- formatEta, but "1h 10m" spacing instead of the tooltip compact form.
+function ns.formatEtaLong(sec)
+  if not finite(sec) then return "-" end
+  if sec < 60 then return "<1m" end
+  local m = math.ceil(sec / 60)
+  local h = math.floor(m / 60)
+  local r = m % 60
+  if h == 0 then return ("%dm"):format(m) end
+  if r == 0 then return ("%dh"):format(h) end
+  return ("%dh %dm"):format(h, r)
+end
+
+-- The persistent bar text: the tooltip headline content in bar shape,
+-- rate and long ETA joined with " - ". Special statuses keep their
+-- short tooltip words; with no pace yet, the bar reads "Collecting
+-- data" exactly when the tooltip would show pace alone.
+function ns.barText(est)
+  if type(est) ~= "table" then return "Collecting data" end
+  local s = est.status
+  if s == "paused" or s == "capped" or s == "untracked"
+      or s == "rep-capped" or s == "unavailable" then
+    return ns.titleText(est)
+  end
+  local rate = est.xpPerHour
+  if rate == nil then return "Collecting data" end
+  local head = fmt(rate) .. (est.unit == "Rep" and " Rep/hr" or " XP/hr")
+  if est.etaSeconds == nil then return head end
+  return head .. " - " .. ns.formatEtaLong(est.etaSeconds)
+end
+
 
 -- The bar. Built the way Blizzard builds its own ExpStatusBarTemplate:
 -- a StatusBar wearing the native XP fill atlases, the native
@@ -471,6 +504,9 @@ function ns.showBarLabel()
 end
 
 function ns.hideBarLabel()
+  -- The persistent text owns its own visibility: hover-off never
+  -- hides it, and the toggle-off handler hides it explicitly.
+  if opts().alwaysShow then return end
   barText:Hide()
 end
 
@@ -1631,7 +1667,12 @@ local function refreshRep(o)
       bar:SetMinMaxValues(0, progress.need)
       bar:SetValue(progress.have)
     end
-    barText:SetText(ns.repBarLabel(progress))
+    if o.alwaysShow then
+      barText:SetText(ns.barText(repEstimate(progress)))
+      barText:Show()
+    else
+      barText:SetText(ns.repBarLabel(progress))
+    end
     applyBarArt(ns.repAtlas(progress))
   else
     if type(bar.SetAnimatedValues) == "function" then
@@ -1640,7 +1681,12 @@ local function refreshRep(o)
       bar:SetMinMaxValues(0, 1)
       bar:SetValue(0)
     end
-    barText:SetText(ns.repBarLabel(nil))
+    if o.alwaysShow then
+      barText:SetText(ns.barText(repEstimate(nil)))
+      barText:Show()
+    else
+      barText:SetText(ns.repBarLabel(nil))
+    end
     applyBarArt(ns.XP_ATLAS, ns.FLARE_XP_ATLAS, ns.LEVELUP_XP_ATLAS)
   end
   -- No overlays in rep mode: rested and quest XP don't exist here.
@@ -1686,7 +1732,12 @@ local function refresh()
       bar:SetMinMaxValues(0, baseline.req)
       bar:SetValue(baseline.xp)
     end
-    barText:SetText(ns.barLabel(baseline, seg))
+    if o.alwaysShow then
+      barText:SetText(ns.barText(est))
+      barText:Show()
+    else
+      barText:SetText(ns.barLabel(baseline, seg))
+    end
     local isRested = seg ~= nil and seg.hasRested
     applyBarArt(isRested and ns.RESTED_ATLAS or ns.XP_ATLAS,
       isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
@@ -2135,6 +2186,9 @@ function ns.ensureSettings()
   check("shown", "Show the bar",
     "Show the bar: XP with XP/hr and bonuses while leveling, reputation with Rep/hr at max level.",
     function() refresh() end)
+  check("alwaysShow", "Always show bar text",
+    "Keep the XP/hr and time-to-level line on the bar at all times instead of showing it on hover only.",
+    function() refresh() if not opts().alwaysShow then ns.hideBarLabel() end end)
   check("hideDefault", "Hide the default XP bar",
     "Hide Blizzard's status bar cluster while VocXP shows. Watched reputation and honor bars hide with it.",
     function() refresh() end)
