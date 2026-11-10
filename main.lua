@@ -1105,24 +1105,6 @@ function ns.barLabel(snap, seg)
   return ("%d  %s/%s (%d%%)"):format(snap.level, fmt(snap.xp), fmt(snap.req), pct)
 end
 
--- The stats line under the bar: ready quests and rested reach in one
--- glance, no hover needed. Same wording as the tooltip lines. Nil when
--- neither shows, so the frame keeps a stable size with an empty slot.
-function ns.subStatsLine(seg, count)
-  if seg == nil then return nil end
-  local parts = {}
-  if count > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 then
-    local noun = count == 1 and "quest" or "quests"
-    parts[#parts + 1] = ("%d %s ready: %d%%"):format(count, noun,
-      math.floor(seg.questPct + 0.5))
-  end
-  if seg.hasRested and seg.restedPct >= 0.5 then
-    parts[#parts + 1] = ("Rested: %d%%"):format(math.floor(seg.restedPct + 0.5))
-  end
-  if #parts == 0 then return nil end
-  return table.concat(parts, " · ")
-end
-
 -- Ready-to-turn-in quest XP --------------------------------------------
 -- The payout waiting at quest givers, as raw XP and a quest count.
 -- GetQuestLogRewardXP reads the selected entry, so the scan saves and

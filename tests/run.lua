@@ -702,23 +702,6 @@ do -- missing atlases hide their layers, never the bar
   check("no-atlas bar paints", w.bar.value == 500 and w.label.text == "10  500/1k (50%)")
 end
 
--- 32. Stats line: ready quests and rested reach, always on screen.
-do
-  local w = newWorld()
-  local ns = loadAddon(w)
-  local snap = { level = 10, xp = 500, req = 1000, capped = false }
-  local both = ns.barSegments(snap, 300, 200)
-  check("stats both", ns.subStatsLine(both, 2) == "2 quests ready: 20% · Rested: 30%")
-  check("stats singular", ns.subStatsLine(both, 1) == "1 quest ready: 20% · Rested: 30%")
-  local quests = ns.barSegments(snap, 0, 200)
-  check("stats quests only", ns.subStatsLine(quests, 2) == "2 quests ready: 20%")
-  local rested = ns.barSegments(snap, 300, 0)
-  check("stats rested only", ns.subStatsLine(rested, 0) == "Rested: 30%")
-  check("stats count without reach hides",
-    ns.subStatsLine(ns.barSegments(snap, 0, 0), 2) == nil)
-  check("stats neither hides", ns.subStatsLine(ns.barSegments(snap, 0, 0), 0) == nil)
-  check("stats nil seg hides", ns.subStatsLine(nil, 2) == nil)
-end
 do -- hover reveals the bar label; leaving hides it
   local w = newWorld()
   loadAddon(w)
@@ -778,9 +761,7 @@ do
 end
 do -- slivers show in the overlays but never as 0% lines
   local w = newWorld()
-  local ns = loadAddon(w)
-  local seg = ns.barSegments({ level = 75, xp = 9428, req = 69130, capped = false }, 100, 0)
-  check("sliver stats hides", ns.subStatsLine(seg, 0) == nil)
+  loadAddon(w)
   w.restedXp = 100
   w.xp, w.max = 9428, 69130
   clientLoaded(w)
