@@ -30,16 +30,6 @@ function ns.play(kind)
   pcall(PlaySound, type(id) == "number" and id or s[2])
 end
 
--- Numeric IDs through the same route: a sound of our own (a configured
--- chime) plays here, never with PlaySound directly, so a missing sound
--- API stays silent instead of erroring.
-function ns.playID(id)
-  local num = tonumber(id)
-  if not num or num == 0 then return end
-  if type(PlaySound) ~= "function" then return end
-  pcall(PlaySound, num)
-end
-
 -- Palette (FAMILY.md "Palette"), defined once: house gold for the title
 -- and frame accent, green and brick red for bonus state only, gray for
 -- the missing-buff section. Nothing paints a color at a call site.
@@ -1988,6 +1978,29 @@ local function readSnapshot()
   return { level = level, xp = UnitXP("player"), req = max, capped = false }
 end
 
+-- Rank-up line for the tracked faction: one chat fact when the new
+-- progress sits exactly one rank above the old, or when a Paragon
+-- reward flips to pending. Same-level gains stay silent (the rate owns
+-- them); anything else resyncs silently like ns.repGain.
+function ns.repRankMessage(old, new)
+  if type(old) ~= "table" or type(new) ~= "table" then return nil end
+  if new.capped then return nil end
+  if new.kind == "paragon" then
+    if new.pending and not old.pending then
+      return "paragon reward ready with " .. new.name
+    end
+    return nil
+  end
+  if old.id ~= new.id or old.kind ~= new.kind then return nil end
+  if type(old.level) ~= "number" or type(new.level) ~= "number" then return nil end
+  if new.level ~= old.level + 1 then return nil end
+  local label = new.levelLabel
+  if new.kind == "renown" then
+    label = ("renown %d"):format(new.level)
+  end
+  if type(label) ~= "string" or label == "" then label = "a new rank" end
+  return ("rank up with %s: %s"):format(new.name, label:lower())
+end
 -- Rep gains arrive as faction updates: rescan for the latest gainer,
 -- re-resolve (following it when nothing is watched), then reconstruct
 -- at most one award for the tracked faction from its baseline delta,
@@ -2061,6 +2074,8 @@ local function onRep(gainedID, updatedStanding, renownLevel)
           ns.noteSummaryGain(stamp, "rep", repFactionID, snap.name, award)
         end
       end
+      local rankMsg = ns.repRankMessage(repBaseline, snap)
+      if rankMsg then ns.say(rankMsg) end
       repBaseline = snap
     end
   end
@@ -2089,6 +2104,25 @@ local function onXP()
   end
   baseline = snap
   refresh()
+end
+
+-- The ding: one chat fact when the fresh snapshot sits above the
+-- baseline level, then a resync with no award -- the XP path stays the
+-- single authoritative award source, so event order cannot
+-- double-count it. A repeat event at the same level only resyncs; a
+-- ding to cap pivots modes below. Announced outside pause: the line
+-- is a fact about the character, not tracked data. The fanfare itself
+-- stays the client's own: no SOUNDKIT name for it exists in
+-- Blizzard's UI source, so the addon adds no sound of its own.
+local function onLevelUp()
+  local snap = readSnapshot()
+  if baseline ~= nil
+      and type(baseline.level) == "number" and type(snap.level) == "number"
+      and snap.level > baseline.level then
+    ns.say(("level %d reached"):format(snap.level))
+  end
+  baseline = snap
+  if snap.capped then activateMode(snap) end
 end
 
 -- Blizzard Settings panel (Settings > AddOns > VocXP): the same
@@ -2206,6 +2240,8 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
       if arg1 ~= "player" then return end
     elseif event == "PLAYER_XP_UPDATE" then
       onXP()
+    elseif event == "PLAYER_LEVEL_UP" then
+      onLevelUp()
     elseif event == "UPDATE_FACTION" then
       onRep()
     elseif event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
@@ -2217,13 +2253,12 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
         or event == "QUEST_COMPLETE" then
       ns.scanQuestXp()
     end
-    -- PLAYER_LEVEL_UP falls through to a bare re-render: the XP path
-    -- is the single authoritative award source, so a ding never adds
-    -- anything here and event order cannot double-count it.
     -- PLAYER_EQUIPMENT_CHANGED, UPDATE_EXHAUSTION, and
-    -- PLAYER_UPDATE_RESTING fall through the same way: a gear swap or
-    -- a rest change only re-renders, which refreshes the rested
-    -- and quest lines at once.
+    -- PLAYER_UPDATE_RESTING fall through to a bare re-render: a gear
+    -- swap or a rest change only re-renders, which refreshes the
+    -- rested and quest lines at once. A ding never adds an award:
+    -- onLevelUp resyncs with no gain, so event order cannot
+    -- double-count it.
   end
   refresh()
 end)

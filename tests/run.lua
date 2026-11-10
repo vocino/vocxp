@@ -1360,17 +1360,6 @@ do
   check("no sound API is silent", #w.sounds == 0)
 end
 
-do -- numeric IDs play through the same guarded route
-  local w = newWorld()
-  local ns = loadAddon(w)
-  clientLoaded(w)
-  ns.playID(123)
-  check("playID routes numeric", w.sounds[1] == 123)
-  ns.playID(0)
-  ns.playID("nope")
-  check("playID ignores junk", #w.sounds == 1)
-end
-
 -- Tooltip line helpers: green bonus lines and muted gap lines, in order.
 local function greenlines(w)
   local out = {}
@@ -3239,6 +3228,136 @@ do -- a payload loss resyncs but never steals tracking
   w.factions[2].standing = 7000
   standingEvent(w, 202, 7000)
   check("payload loss keeps watched", ns.repTracked() == 101 and ns.repFollowingWatched() == true)
+end
+do -- unit: rank lines only for single-rank steps and paragon flips
+  local w = newWorld()
+  local ns = loadAddon(w)
+  local base = { id = 101, name = "Court", kind = "standing", have = 3000, need = 9000, level = 6, capped = false }
+  check("rank silent same level", ns.repRankMessage(base,
+    { id = 101, name = "Court", kind = "standing", have = 3200, need = 9000, level = 6, capped = false }) == nil)
+  check("rank silent two levels", ns.repRankMessage(base,
+    { id = 101, name = "Court", kind = "standing", have = 100, need = 21000, level = 8, capped = false }) == nil)
+  check("rank silent capped", ns.repRankMessage(base,
+    { id = 101, name = "Court", kind = "standing", have = 1, need = 1, level = 8, capped = true }) == nil)
+  check("rank silent no baseline", ns.repRankMessage(nil, base) == nil)
+  check("rank standing", ns.repRankMessage(base,
+    { id = 101, name = "Court", kind = "standing", have = 500, need = 21000, level = 7,
+      levelLabel = "Revered", capped = false }) == "rank up with Court: revered")
+  check("rank renown", ns.repRankMessage(
+    { id = 301, name = "Accord", kind = "renown", have = 100, need = 2500, level = 7, capped = false },
+    { id = 301, name = "Accord", kind = "renown", have = 200, need = 2500, level = 8,
+      levelLabel = "Renown 8", capped = false }) == "rank up with Accord: renown 8")
+  check("rank paragon flip", ns.repRankMessage(
+    { id = 401, name = "Para", kind = "paragon", raw = 12300, have = 2300, need = 10000,
+      pending = false, capped = false },
+    { id = 401, name = "Para", kind = "paragon", raw = 12300, have = 10000, need = 10000,
+      pending = true, capped = false }) == "paragon reward ready with Para")
+  check("rank paragon steady silent", ns.repRankMessage(
+    { id = 401, name = "Para", kind = "paragon", raw = 12300, have = 10000, need = 10000,
+      pending = true, capped = false },
+    { id = 401, name = "Para", kind = "paragon", raw = 12400, have = 10000, need = 10000,
+      pending = true, capped = false }) == nil)
+end
+do -- PLAYER_LEVEL_UP announces the ding once, then resyncs silently
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 11, 50, 2000
+  levelEvent(w)
+  check("ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 11 reached")
+  check("ding says one line", #w.printed == before + 1)
+  levelEvent(w) -- repeat at the same level: silent resync
+  check("ding repeats silent", #w.printed == before + 1)
+  check("ding paints new level", w.label.text == "11  50/2k (3%)")
+end
+do -- a multi-level ding celebrates the new level and resyncs
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 12, 50, 3000
+  levelEvent(w)
+  check("jump ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 12 reached")
+  check("jump ding says one line", #w.printed == before + 1)
+end
+do -- ding to cap announces the level, then pivots to rep
+  local w = newWorld()
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  capWorld(w)
+  levelEvent(w)
+  check("cap ding announces level", w.printed[#w.printed - 1] ==
+    "|cff66ccffVocXP|r: level 90 reached")
+  check("cap ding pivots to rep", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: tracking reputation at max level (/vxp config to turn it off)")
+  check("cap ding swaps to rep", w.frame.events.UPDATE_FACTION == true
+    and w.frame.events.PLAYER_XP_UPDATE == nil)
+end
+do -- a standing rank-up announces once; later gains stay silent
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.factions[1].reaction, w.factions[1].lo, w.factions[1].hi = 7, 21000, 42000
+  w.factions[1].standing = 21500
+  standingEvent(w, 101, 21500)
+  check("rank announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: rank up with Court: revered")
+  w.factions[1].standing = 22000
+  standingEvent(w, 101, 22000)
+  check("same rank stays silent", #w.printed == before + 1)
+end
+do -- a multi-rank jump resyncs with no rank line
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.factions[1].reaction, w.factions[1].lo, w.factions[1].hi = 8, 42000, 43000
+  w.factions[1].standing = 42999
+  standingEvent(w, 101, 42999)
+  check("rank jump stays silent", #w.printed == before)
+end
+do -- a renown level-up announces the new level
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 301, name = "Accord", reaction = 5, lo = 0, hi = 2500, standing = 100 } })
+  w.watchedID = 301
+  w.isMajor[301] = true
+  w.major[301] = { level = 7, threshold = 2500, hasMax = false }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.major[301].level = 8
+  w.factions[1].standing = 200
+  renownEvent(w, 301)
+  check("renown rank announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: rank up with Accord: renown 8")
+  check("renown rank says one line", #w.printed == before + 1)
+end
+do -- a pending paragon reward announces once
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 401, name = "Para", reaction = 8, lo = 42000, hi = 43000, standing = 42999 } })
+  w.watchedID = 401
+  w.paragon[401] = { current = 12300, threshold = 10000 }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.paragon[401].pending = true
+  repEvent(w)
+  check("paragon announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: paragon reward ready with Para")
+  repEvent(w)
+  check("paragon pending repeats silent", #w.printed == before + 1)
 end
 do -- a renown level-up follows via its own payload
   local w = newWorld()

@@ -64,6 +64,10 @@ a long one that is guessed, so unverified event and mode buffs have no
 entry at all; rested needs none either, since the bar's own reach
 lines already report it.
 
+Dinging (or earning a reputation rank) prints one chat line
+(`level 11 reached`, `rank up with Court: revered`); the level-up
+fanfare itself is the client's own sound.
+
 ```
 /vxp           show or hide the bar
 /vxp lock      lock or unlock the position
