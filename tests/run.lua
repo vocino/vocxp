@@ -8,7 +8,6 @@
 
 local testDir = debug.getinfo(1, "S").source:gsub("\\", "/"):match("@?(.*/)") or ""
 local mainPath = testDir .. "../main.lua"
-
 local passed = 0
 local function check(name, cond)
   if not cond then error("FAIL: " .. name, 2) end
@@ -97,6 +96,28 @@ local function loadAddon(world)
 
   g.IsInInstance = function() return world.inInstance end
   g.InCombatLockdown = function() return world.inCombat end
+  g.IsInGuild = function() return world.inGuild == true end
+  g.LE_PARTY_CATEGORY_HOME = 1
+  g.LE_PARTY_CATEGORY_INSTANCE = 2
+  g.IsInGroup = function(cat)
+    if cat == nil then return world.inGroup == true end
+    if cat == 1 then
+      if world.groupHome ~= nil then return world.groupHome end
+      return world.inGroup == true
+    end
+    if cat == 2 then
+      if world.groupInstance ~= nil then return world.groupInstance end
+      return false
+    end
+    return false
+  end
+  if world.chatSends ~= nil then
+    g.C_ChatInfo = {
+      SendChatMessage = function(text, chatType)
+        world.chatSends[#world.chatSends + 1] = { text = text, chatType = chatType }
+      end,
+    }
+  end
   g.GetMaxLevelForLatestExpansion = function() return world.latestMaxLevel end
   g.GetMaxLevelForPlayerExpansion = function() return world.expansionMaxLevel end
   g.GetMaxPlayerLevel = function() return world.playerMaxLevel end
@@ -205,7 +226,24 @@ local function loadAddon(world)
       s.SetValueChangedCallback = function(_, fn) world.settingCallbacks[var] = fn end
       return s
     end
-    S.CreateCheckbox = function() world.settingsChecks = world.settingsChecks + 1 end
+    S.CreateCheckbox = function()
+      world.settingsChecks = world.settingsChecks + 1
+      local init = {}
+      init.SetParentInitializer = function(_, parent, pred)
+        world.setParents[#world.setParents + 1] = { parent = parent, pred = pred }
+      end
+      return init
+    end
+    S.CreateDropdown = function()
+      world.settingsDropdowns = (world.settingsDropdowns or 0) + 1
+      return {}
+    end
+    S.CreateControlTextContainer = function()
+      local container = {}
+      container.Add = function() end
+      container.GetData = function() return {} end
+      return container
+    end
     S.OpenToCategory = function(id) world.openedCategory = id end
     g.Settings = S
   end
@@ -357,7 +395,7 @@ local function newWorld()
 
            printed = {}, tickers = {}, frames = {}, sounds = {}, savedVars = nil,
            gametip = { lines = {} }, withSettings = false, settingsReg = {},
-           settingsChecks = 0, settingCallbacks = {} }
+           settingsChecks = 0, settingCallbacks = {}, setParents = {} }
 end
 
 -- Simulate the client deserializing SavedVariables (a FRESH table replaces
@@ -470,6 +508,7 @@ do -- fresh profile gets all defaults and hides the native bar
   check("fresh repMode defaults true", ns.db.repMode == true)
   check("fresh followLatest defaults false", ns.db.followLatest == false)
   check("fresh alwaysShow defaults false", ns.db.alwaysShow == false)
+  check("fresh announce defaults off", ns.db.announce == "off")
   check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
   check("fresh frame shown", w.frame.shown == true)
   check("fresh native hidden", w.native.shown == false)
@@ -2260,8 +2299,9 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("six options registered", keys.shown ~= nil and keys.hideDefault ~= nil
-    and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and keys.alwaysShow ~= nil and #w.settingsReg == 6)
+  check("seven options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+    and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and keys.alwaysShow ~= nil
+    and keys.announce ~= nil and #w.settingsReg == 7)
   check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
     and keys.hideDefault.tbl == w.env.VocXPDB)
   check("six checkboxes", w.settingsChecks == 6)
@@ -2269,7 +2309,7 @@ do
     and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false
     and keys.alwaysShow.default == false)
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 6)
+  check("built once", #w.settingsReg == 7)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)
@@ -3331,6 +3371,169 @@ do -- a multi-level ding celebrates the new level and resyncs
   check("jump ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 12 reached")
   check("jump ding says one line", #w.printed == before + 1)
 end
+do -- announce routing: off sends nothing extra, party/guild copy the line
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("announce off by default", ns.announceChannel() == "off")
+  check("announce off sends nothing", ns.announce("level 25 reached") == "off")
+  ns.db.announce = "raid"
+  check("announce unknown reads off", ns.announceChannel() == "off")
+  check("announce unknown sends nothing", ns.announce("level 25 reached") == "off")
+  ns.db.announce = 42
+  check("announce wrong type resets", ns.opts().announce == "off")
+end
+do -- the level 25 ding to party: local line plus a plain-text copy
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  w.chatSends = {}
+  w.inGroup = true
+  w.savedVars = { announce = "party" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("party ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("party ding says one local line", #w.printed == before + 1)
+  check("party ding copies once", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "PARTY")
+end
+do -- party selected but solo: the local line keeps the fact, nothing sent
+  local w = newWorld()
+  w.chatSends = {}
+  w.savedVars = { announce = "party" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("party solo unavailable", ns.announce("level 25 reached") == "unavailable")
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("party solo keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("party solo says one local line", #w.printed == before + 1)
+  check("party solo sends nothing", #w.chatSends == 0)
+end
+do -- instance-only group chats in INSTANCE_CHAT, never raw PARTY
+  local w = newWorld()
+  w.chatSends = {}
+  w.inGroup = true
+  w.groupHome = false
+  w.groupInstance = true
+  w.savedVars = { announce = "party" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("instance group resolves", ns.groupCategory() == "INSTANCE_CHAT")
+  check("instance group sends", ns.announce("level 25 reached") == "sent")
+  check("instance copy targets instance chat", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "INSTANCE_CHAT")
+end
+do -- home group resolves PARTY even with an instance group beside it
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.inGroup = true
+  w.groupHome = true
+  w.groupInstance = true
+  clientLoaded(w)
+  check("home group resolves", ns.groupCategory() == "PARTY")
+end
+do -- combat defers the copy; combat's end releases it
+  local w = newWorld()
+  w.chatSends = {}
+  w.inGroup = true
+  w.inCombat = true
+  w.savedVars = { announce = "party" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("combat defers", ns.announce("level 25 reached") == "deferred")
+  check("combat sends nothing yet", #w.chatSends == 0)
+  check("combat flush holds", ns.flushAnnounce() == false and #w.chatSends == 0)
+  w.inCombat = false
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_REGEN_ENABLED")
+  check("regen releases the copy", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "PARTY")
+  check("regen flush idles", ns.flushAnnounce() == false)
+end
+do -- the block watch records only our own taint blocks, for diag
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("block watch starts clean", ns.lastBlock == nil)
+  w.frame.scripts.OnEvent(w.frame, "ADDON_ACTION_BLOCKED", "SomeOther", "DoThing()")
+  check("block watch ignores others", ns.lastBlock == nil)
+  w.frame.scripts.OnEvent(w.frame, "ADDON_ACTION_BLOCKED", "VocXP", "UNKNOWN()")
+  check("block watch records ours", ns.lastBlock == "UNKNOWN()")
+  local before = #w.printed
+  w.env.SlashCmdList.VOCXP("diag")
+  check("diag reports the block", w.printed[#w.printed - 1] ==
+    "  last block: UNKNOWN() (a routed copy died to taint; see BugSack)")
+  check("diag still closes", w.printed[#w.printed] ==
+    "  after the ding: /reload, then read WTF/Account/<account>/SavedVariables/!BugGrabber.lua")
+  check("diag block adds one line", #w.printed == before + 5)
+end
+do -- guild routing copies the ding line bare, with no addon prefix
+  local w = newWorld()
+  w.chatSends = {}
+  w.inGuild = true
+  w.savedVars = { announce = "guild" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("guild sends", ns.announce("level 25 reached") == "sent")
+  check("guild copy bare", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "GUILD")
+  w.inGuild = false
+  check("guildless unavailable", ns.announce("level 25 reached") == "unavailable")
+  check("guildless sends nothing", #w.chatSends == 1)
+end
+do -- /vxp announce reports and sets the channel, never acting on junk
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  local slash = w.env.SlashCmdList.VOCXP
+  local before = #w.printed
+  slash("announce")
+  check("announce reports off", w.printed[#w.printed] == "|cff66ccffVocXP|r: ding announcements to off (off, party, or guild)")
+  slash("announce party")
+  check("announce sets party", w.env.VocXPDB.announce == "party"
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: ding announcements to party")
+  slash("announce raid")
+  check("announce junk keeps party", w.env.VocXPDB.announce == "party"
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: announce off, party, or guild (now party)")
+  check("announce says one line each", #w.printed == before + 3)
+end
+do -- /vxp diag dumps the snapshot, capture, and announce routing
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  w.savedVars = { announce = "party" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("diag text levels", ns.diagText(
+    { level = 24, xp = 4500, req = 5000, capped = false },
+    "xp", false, "retail", 90, false, false) ==
+    "level 24, 4500/5000 (90%), mode=xp, paused=no, flavor=retail, maxLevel=90, capture=none")
+  check("diag text capped", ns.diagText(
+    { level = 90, xp = 0, req = 1, capped = true },
+    "rep", false, "retail", 90, true, true) ==
+    "level 90 (capped), mode=rep, paused=no, flavor=retail, maxLevel=90, capture=BugGrabber+BugSack")
+  check("diag text unknown", ns.diagText(nil, nil, false, nil, nil, false, false) ==
+    "level unknown, mode=unknown, paused=no, flavor=unknown, maxLevel=unknown, capture=none")
+  local grabber, sack = ns.diagCapture()
+  check("diag capture stubbed out", grabber == false and sack == false)
+  local before = #w.printed
+  w.env.SlashCmdList.VOCXP("diag")
+  check("diag says four lines", #w.printed == before + 4)
+  check("diag header levels", w.printed[before + 1] ==
+    "|cff66ccffVocXP|r: diag level 24, 4500/5000 (90%), mode=xp, paused=no, flavor=retail, maxLevel=90, capture=none")
+  check("diag capture line", w.printed[before + 2] ==
+    "  capture: !BugGrabber missing, Lua errors will not persist (install !BugGrabber + BugSack)")
+  check("diag announce solo", w.printed[before + 3] == "  announce: party (solo, lines stay local)")
+  w.inGroup = true
+  w.env.SlashCmdList.VOCXP("diag")
+  check("diag announce grouped", w.printed[#w.printed - 1] == "  announce: party (party chat reachable)")
+end
 do -- ding to cap announces the level, then pivots to rep
   local w = newWorld()
   setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
@@ -3346,11 +3549,14 @@ do -- ding to cap announces the level, then pivots to rep
   check("cap ding swaps to rep", w.frame.events.UPDATE_FACTION == true
     and w.frame.events.PLAYER_XP_UPDATE == nil)
 end
-do -- a standing rank-up announces once; later gains stay silent
+do -- a standing rank-up announces once, locally; later gains stay silent
   local w = newWorld()
   capWorld(w)
   setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
   w.watchedID = 101
+  w.chatSends = {}
+  w.inGuild = true
+  w.savedVars = { announce = "guild" }
   loadAddon(w)
   clientLoaded(w)
   local before = #w.printed
@@ -3358,6 +3564,7 @@ do -- a standing rank-up announces once; later gains stay silent
   w.factions[1].standing = 21500
   standingEvent(w, 101, 21500)
   check("rank announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: rank up with Court: revered")
+  check("rank never routes", #w.chatSends == 0)
   w.factions[1].standing = 22000
   standingEvent(w, 101, 22000)
   check("same rank stays silent", #w.printed == before + 1)
@@ -4002,5 +4209,161 @@ do -- the shipped Midnight Interface version reads retail
   clientLoaded(w)
   check("midnight flavor", ns.clientFlavor() == "retail")
   check("midnight queries own addon", w.queriedAddon == "VocXP")
+end
+
+-- 52. New-feature onboarding: a first install fills silently, an
+-- existing profile auto-enables a new on-by-default key with one chat
+-- line and a 7-day tag, and dismiss clears every tag at once.
+do -- a first install fills silently: no login spam
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = {}
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("fresh tags nothing", ns.db._new ~= nil and next(ns.db._new) == nil)
+  check("fresh marks seen", ns.db._seen ~= nil and ns.db._seen.shown == true)
+  local keys = {}
+  for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
+  check("fresh labels carry no tag", keys.shown.label == "Show the bar")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  check("fresh announces nothing", #w.printed == 0)
+end
+do -- an existing profile auto-enables a new on-by-default key once
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  ns.defaults.__future = true
+  ns.NEW_BLURBS.__future = "future thing"
+  w.env.VocXPDB = { shown = true, locked = false, hideDefault = false,
+    repMode = true, followLatest = false, alwaysShow = false,
+    announce = "off", point = "BOTTOM", x = 0, y = 100 }
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("future key fills on", ns.db.__future == true)
+  check("future key tagged", ns.db._new ~= nil and ns.db._new.__future ~= nil)
+  check("veteran repMode untouched", ns.db.repAnnounced == nil)
+  check("nothing announced at load", #w.printed == 0)
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  check("future key announced once", #w.printed == 1 and w.printed[1] ==
+    "|cff66ccffVocXP|r: new on: future thing (/vxp dismiss clears new tags)")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  check("second login stays quiet", #w.printed == 1)
+  w.env.SlashCmdList.VOCXP("dismiss")
+  check("dismiss clears the tag", next(ns.db._new) == nil)
+  check("dismiss confirms", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: cleared 1 new tag" and w.sounds[#w.sounds] == 856)
+  w.env.SlashCmdList.VOCXP("dismiss")
+  check("empty dismiss idles", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: no new tags" and w.sounds[#w.sounds] == 857)
+  local before = #w.printed
+  w.env.SlashCmdList.VOCXP("help")
+  local tagged = false
+  for i = before + 1, #w.printed do
+    if w.printed[i]:find("new:", 1, true) ~= nil then tagged = true end
+  end
+  check("cleared tags leave help", tagged == false)
+end
+do -- a profile missing repMode tags it and suppresses the echo
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = { shown = true, locked = false, hideDefault = false,
+    followLatest = false, alwaysShow = false,
+    announce = "off", point = "BOTTOM", x = 0, y = 100 }
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("repMode fills on", ns.db.repMode == true)
+  check("repMode tagged", ns.db._new.repMode ~= nil)
+  check("repMode echo suppressed", ns.db.repAnnounced == true)
+  local keys = {}
+  for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
+  check("tagged row carries the tag", keys.repMode.label == "Track reputation at max level (New)")
+  check("untagged rows stay clean", keys.shown.label == "Show the bar")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  check("repMode announced once", #w.printed == 1 and w.printed[1]:find(
+    "track reputation at max level", 1, true) ~= nil)
+end
+do -- tags expire after the horizon; undated tags wait for dismiss
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("no clock reads nil", ns.newClock() == nil)
+  w.env.time = function() return 12345 end
+  check("clock reads time()", ns.newClock() == 12345)
+  w.env.time = function() error("no clock") end
+  check("broken clock reads nil", ns.newClock() == nil)
+  local now = 2000000
+  ns.db._new = { shown = now, hideDefault = true }
+  ns.db._seen = { shown = "announced", hideDefault = "announced" }
+  check("dated tag lives inside the horizon", ns.isNew("shown", now + 100) == true)
+  check("dated tag dies at the horizon", ns.isNew("shown", now + ns.NEW_HORIZON) == false)
+  check("undated tag lives without a clock", ns.isNew("hideDefault") == true)
+  check("unknown key is not new", ns.isNew("locked", now) == false)
+  ns.pruneNew(ns.db, now + ns.NEW_HORIZON + 1)
+  check("prune drops the expired tag", ns.db._new.shown == nil and ns.db._new.hideDefault == true)
+  local live = ns.liveNewKeys(now + ns.NEW_HORIZON + 1)
+  check("live keys list the survivor", #live == 1 and live[1] == "hideDefault")
+end
+do -- the denylist never auto-enables, never tags, never fills
+  local w = newWorld()
+  local ns = loadAddon(w)
+  ns.defaults.__optin = true
+  ns.NEW_DENYLIST.__optin = true
+  w.env.VocXPDB = { shown = true, locked = false, hideDefault = true,
+    repMode = true, followLatest = false, alwaysShow = false,
+    announce = "off", point = "BOTTOM", x = 0, y = 100 }
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_LOGIN")
+  ns.opts()
+  check("denylisted key never fills", ns.db.__optin == nil)
+  check("denylisted key never tags", ns.db._new.__optin == nil and ns.db._seen.__optin == nil)
+  check("denylisted key never announces", #w.printed == 0)
+end
+
+-- 53. Panel children, confirmed dropdowns, combat clicks, drag-proof tips.
+do -- followLatest gates on repMode: disabled with its reason, never hidden
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = {}
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  check("child gated once", #w.setParents == 1)
+  check("gate reads the live parent", w.setParents[1].pred() == true)
+  ns.db.repMode = false
+  check("gate closes with the parent", w.setParents[1].pred() == false)
+  ns.db.repMode = true
+  check("gate reopens with the parent", w.setParents[1].pred() == true)
+end
+do -- the announce dropdown confirms like every other toggle
+  local w = newWorld()
+  w.withSettings = true
+  local ns = loadAddon(w)
+  w.env.VocXPDB = {}
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  ns.db.announce = "party"
+  w.settingCallbacks["VocXP_announce"]()
+  check("announce party confirms on", w.sounds[#w.sounds] == 856)
+  ns.db.announce = "off"
+  w.settingCallbacks["VocXP_announce"]()
+  check("announce off confirms off", w.sounds[#w.sounds] == 857)
+end
+do -- the tooltip never fires mid-drag, flag or mouse button
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  hover(w)
+  check("hover reads the rate", w.gametip.shown == true)
+  w.env.IsMouseButtonDown = function() return true end
+  w.gametip.shown = false
+  hover(w)
+  check("mouse button suppresses the tip", w.gametip.shown == false)
+  check("suppression reads live", w.ns.tooltipSuppressed() == true)
+  w.env.IsMouseButtonDown = function() error("no mouse") end
+  hover(w)
+  check("broken mouse reads unpressed", w.gametip.shown == true)
+  w.env.IsMouseButtonDown = function() return false end
+  hover(w)
+  check("released button restores the tip", w.gametip.shown == true)
 end
 print("tests/run.lua: " .. passed .. " checks passed")

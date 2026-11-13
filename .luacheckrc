@@ -1,9 +1,9 @@
--- Lint config shared across the Voc family (see FAMILY.md). The WoW
+-- Lint config shared across the Voc family (see the skill's family/FAMILY.md). The WoW
 -- client runs Lua 5.1; tests may use 5.4 features behind guards.
 --
 -- read_globals is the allowlist of WoW API verified against the build
 -- in `## Interface:` (Blizzard_APIDocumentationGenerated for that
--- build, see FAMILY.md "Sources of truth"). Lint fails on any other
+-- build, see the skill's family/FAMILY.md "Sources of truth"). Lint fails on any other
 -- global on purpose: add a name here only after confirming it exists,
 -- under that namespace, in the current build. Never from a wiki.
 std = "lua51"
@@ -23,15 +23,21 @@ globals = {
 
 -- WoW API and UI globals read by the addon.
 read_globals = {
-  "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check (live + forever)
+  "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check; IsAddOnLoaded: rivals and BugGrabber checks (live + forever)
+  "C_ChatInfo", -- SendChatMessage: routed ding/rank copies (live + forever)
   "C_GossipInfo", "C_MajorFactions", "C_Reputation", -- rep mode: friendship, renown, standings (live + forever)
   "C_QuestLog", "C_Timer", "C_UnitAuras",
   "CreateFrame", "EventRegistry", "GameTooltip",
   "C_Container", "C_Item", -- bag walk for the food hint + item class read (live + forever)
   "GetQuestLogRewardXP", "GetTime", "GetXPExhaustion",
+  "IsMouseButtonDown", -- tooltip drag guard, presence-gated (live + forever)
+  "time", -- wall clock for New-tag expiry, presence-gated (live + forever)
   "canaccessvalue", -- secret-aware aura time reads, presence-gated
   "NUM_BAG_SLOTS", -- bag 0 plus worn bags for the food hint, presence-gated
   "InCombatLockdown", "IsInInstance", "IsXPUserDisabled",
+  "IsInGuild", -- guild presence gate for routed copies (live + forever)
+  "IsInGroup", -- group presence gate for routed copies (Blizzard's own argless use)
+  "LE_PARTY_CATEGORY_HOME", "LE_PARTY_CATEGORY_INSTANCE", -- group categories, C-defined like NUM_BAG_SLOTS
   "Settings", "StatusTrackingBarManager", "UIParent",
   "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
   "MAX_REPUTATION_REACTION", -- standing ceiling, Blizzard's ReputationFrame (live + forever)

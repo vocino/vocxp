@@ -66,7 +66,10 @@ lines already report it.
 
 Dinging (or earning a reputation rank) prints one chat line
 (`level 11 reached`, `rank up with Court: revered`); the level-up
-fanfare itself is the client's own sound. "Always show bar text"
+fanfare itself is the client's own sound. "Announce dings to"
+also sends a copy of the ding line to party or guild chat (instance
+groups use instance chat, and the copy waits for combat's end); off
+keeps it local. Ranks and summaries always stay local. "Always show bar text"
 keeps the rate on the bar at all times (`13k XP/hr - 1h 10m`)
 instead of on hover only.
 
@@ -76,6 +79,9 @@ instead of on hover only.
 /vxp pause     pause or resume tracking
 /vxp reset     restart the session
 /vxp rep       reputation tracking on or off
+/vxp announce  ding lines to party, guild, or off
+/vxp diag      dump snapshot and capture state for a bug report
+/vxp dismiss   clear new-feature tags
 /vxp config    open Settings > AddOns > VocXP
 /vxp help      this list (/vocxp works too)
 ```
@@ -123,6 +129,7 @@ Settings > AddOns > VocXP, or `/vxp config`:
   status cluster, so watched reputation and honor bars hide too)
 - Track reputation at max level (default on)
 - Follow latest reputation gains (default off)
+- Announce dings to (default off; party or guild also gets the ding line)
 - Lock the position (default off)
 - Always show bar text (default off)
 
@@ -179,4 +186,5 @@ Part of the Voc family: tiny addons that do one job.
 [VocWarbank](https://github.com/vocino/vocwarbank) ·
 [VocGear](https://github.com/vocino/vocgear) ·
 [VocXP](https://github.com/vocino/vocxp) ·
-[VocVendor](https://github.com/vocino/vocvendor)
+[VocVendor](https://github.com/vocino/vocvendor) ·
+[VocSpeak](https://github.com/vocino/vocspeak)

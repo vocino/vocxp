@@ -1,6 +1,15 @@
 local name, ns = ...
 -- VocXP: rolling XP/hr and time-to-level in one tiny readout, plus
 -- active XP bonuses. Nothing else.
+--
+-- Map, in file order: chat voice and routed ding copies; confirmation
+-- sounds; palette; defaults and new-feature onboarding; the rolling
+-- estimator; bar art, native geometry, and show/hide; burst summaries;
+-- the bonus registry; bonus and missing lines; bar segments, quest XP,
+-- and rested; reputation progress; native bar hiding and Edit Mode
+-- cooperation; refresh and the tooltip; modes; snapshots, ranks, and
+-- dings; the Settings panel; toggle, lock, and the rival notice; the
+-- compartment, diagnostics, and slash.
 
 
 VocXPDB = VocXPDB or {}
@@ -11,6 +20,121 @@ ns.db = VocXPDB
 ns.PREFIX_COLOR = "ff66ccff" -- the family color, same everywhere
 function ns.say(msg)
   print("|c" .. ns.PREFIX_COLOR .. name .. "|r: " .. tostring(msg))
+end
+
+-- Routed copies of the ding line. The local line always prints with
+-- the addon prefix; the channel carries the bare fact only (no
+-- "VocXP:", no color escapes): party and guild chat already show who
+-- sent it. Ranks and burst summaries stay local: only dings route.
+-- Off (the default) sends nothing extra, so updating never surprises
+-- guild chat. Every external read is presence-gated and pcall-guarded
+-- like every other guest call: no group, no guild, or no chat API
+-- sends nothing instead of erroring, and the local line keeps the
+-- fact.
+local function inGuildNow()
+  if type(IsInGuild) ~= "function" then return false end
+  local ok, v = pcall(IsInGuild)
+  return ok and v == true
+end
+ns.inGuildNow = inGuildNow
+
+local function inGroupNow()
+  if type(IsInGroup) ~= "function" then return false end
+  local ok, v = pcall(IsInGroup)
+  return ok and v == true
+end
+ns.inGroupNow = inGroupNow
+
+-- Party target mirroring the edit box smart-switch
+-- (ChatFrameEditBox.lua): an instance-only group chats in
+-- INSTANCE_CHAT, never PARTY. A raw PARTY send there is what the
+-- engine blocks. LE_ categories are C-defined globals (used bare
+-- across Blizzard's UI); without them the argless call stands in.
+function ns.groupCategory()
+  if type(IsInGroup) ~= "function" then return nil end
+  if type(LE_PARTY_CATEGORY_HOME) == "number"
+      and type(LE_PARTY_CATEGORY_INSTANCE) == "number" then
+    local okHome, home = pcall(IsInGroup, LE_PARTY_CATEGORY_HOME)
+    if okHome and home then return "PARTY" end
+    local okInst, inst = pcall(IsInGroup, LE_PARTY_CATEGORY_INSTANCE)
+    if okInst and inst then return "INSTANCE_CHAT" end
+    return nil
+  end
+  local ok, inGroup = pcall(IsInGroup)
+  if ok and inGroup then return "PARTY" end
+  return nil
+end
+
+function ns.sendChatCopy(text, chatType)
+  if type(C_ChatInfo) ~= "table" then return false end
+  if type(C_ChatInfo.SendChatMessage) ~= "function" then return false end
+  local ok = pcall(C_ChatInfo.SendChatMessage, text, chatType)
+  return ok == true
+end
+
+-- The validated announce channel, read live so slash and panel apply
+-- at once. Reads ns.opts (not the local) because this block runs
+-- before the local's declaration; every call happens after load.
+function ns.announceChannel()
+  local channel = ns.opts().announce
+  if not ns.ANNOUNCE_CHANNELS[channel] then return "off" end
+  return channel
+end
+
+-- A routed copy queued while busy: combat lockdown can turn a send
+-- into a taint block, so the copy waits for the fight like the burst
+-- summary does. Latest wins; dings are rare and the local line at the
+-- call site already kept every fact.
+local pendingAnnounce = nil
+
+-- Send one routed copy now. Returns "sent" (the pcall held -- note a
+-- taint block is an engine event, not a Lua error, so this never
+-- proves delivery; the block watch below is the proof) or
+-- "unavailable" (the channel is selected but not joinable right now).
+-- Never errors.
+function ns.sendRouted(channel, msg)
+  local text = tostring(msg)
+  if channel == "guild" then
+    if inGuildNow() and ns.sendChatCopy(text, "GUILD") then return "sent" end
+    return "unavailable"
+  end
+  local target = ns.groupCategory()
+  if target == nil then return "unavailable" end
+  if ns.sendChatCopy(text, target) then return "sent" end
+  return "unavailable"
+end
+
+-- Send the routed copy of one event line. Returns "off" (the default,
+-- nothing extra), "deferred" (queued for combat's end), or whatever
+-- ns.sendRouted reports. Never errors.
+function ns.announce(msg)
+  local channel = ns.announceChannel()
+  if channel == "off" then return "off" end
+  if ns.inCombat() then
+    pendingAnnounce = tostring(msg)
+    return "deferred"
+  end
+  return ns.sendRouted(channel, msg)
+end
+
+-- Flush the queued copy after combat. Called on PLAYER_REGEN_ENABLED.
+function ns.flushAnnounce()
+  if pendingAnnounce == nil then return false end
+  if ns.inCombat() then return false end
+  local msg = pendingAnnounce
+  pendingAnnounce = nil
+  ns.announce(msg)
+  return true
+end
+
+-- Self taint watch: a routed send can die to ADDON_ACTION_BLOCKED with
+-- no Lua error at all, so pcall success never proves delivery. The
+-- engine names the blamed addon, and we only record our own: the next
+-- diag then reports the block instead of guessing "sent".
+ns.lastBlock = nil
+function ns.onActionBlocked(addonName, addonFunc)
+  if addonName ~= name then return end
+  ns.lastBlock = tostring(addonFunc or "?")
 end
 
 -- Confirmation sounds shared by every Voc addon (FAMILY.md "Sounds"):
@@ -64,23 +188,183 @@ local COLORS = ns.COLORS
 -- holding the wrong type resets; unknown keys are left alone.
 local defaults = { shown = true, locked = false, hideDefault = true,
   repMode = true, followLatest = false, alwaysShow = false,
+  announce = "off",
   point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local VALID_POINTS = {
   TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true,
   RIGHT = true, BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
 }
+-- Announce routing for ding and rank-up lines: a quiet local line by
+-- default, a routed copy to party or guild chat when asked. Anything
+-- else (a hand edit, a forward-compat value) reads as off.
+ns.ANNOUNCE_CHANNELS = { off = true, party = true, guild = true }
 local function opts()
   if type(ns.db) ~= "table" then ns.db = {} VocXPDB = ns.db end
+  -- A denylisted key never auto-enables: it stays absent until real
+  -- code sets it. Everything else fills or repairs to its default.
   for k, v in pairs(defaults) do
-    if type(ns.db[k]) ~= type(v) then ns.db[k] = v end
+    if ns.db[k] == nil then
+      if not ns.NEW_DENYLIST[k] then ns.db[k] = v end
+    elseif type(ns.db[k]) ~= type(v) then
+      ns.db[k] = v
+    end
   end
   -- A hand-edited anchor the client cannot SetPoint to would error on
   -- every login; fall back to the default instead of breaking the bar.
   if not VALID_POINTS[ns.db.point] then ns.db.point = defaults.point end
+  if not ns.ANNOUNCE_CHANNELS[ns.db.announce] then ns.db.announce = defaults.announce end
   return ns.db
 end
 ns.opts = opts
+
+-- New-feature onboarding (voc-addons principle 5): defaults are the
+-- onboarding, so a key missing from the DB turns on. A missing key
+-- whose default reads as on is a new feature for an existing profile:
+-- one chat line, a "New" tag on its Settings row that expires after a
+-- 7-day horizon, and a per-feature seen flag so it never re-announces.
+-- "/vxp dismiss" clears every live tag at once. Fresh profiles fill
+-- silently: no login spam for a first install. Keys that must never
+-- auto-enable live in the denylist below, never in scattered
+-- conditionals; today the list is empty on purpose.
+ns.NEW_HORIZON = 7 * 24 * 60 * 60 -- seconds
+ns.NEW_DENYLIST = {}
+-- Player words for each auto-enabled key, in the chat line's voice.
+-- A new on-by-default key ships with its blurb here, or the key name
+-- stands in so the line is never silent.
+ns.NEW_BLURBS = {
+  shown = "show the bar",
+  hideDefault = "hide the default XP bar",
+  repMode = "track reputation at max level",
+}
+
+-- Wall clock for tag expiry: bare time(), the same call Blizzard's
+-- own chat, guild news, and friends list read (ChatFrameOverrides,
+-- GuildNews, FriendsFrame, live + forever). Presence-gated: without
+-- it tags live until dismissed, never erroring.
+local function newClock()
+  if type(time) ~= "function" then return nil end
+  local ok, t = pcall(time)
+  if ok and type(t) == "number" then return t end
+  return nil
+end
+ns.newClock = newClock
+
+-- Defaults keys absent from db, sorted so chat order is stable. The
+-- walk is over defaults, so bookkeeping keys (_new, _seen) never report.
+function ns.scanMissing(db)
+  local out = {}
+  if type(db) ~= "table" then return out end
+  for k in pairs(defaults) do
+    if db[k] == nil then out[#out + 1] = k end
+  end
+  table.sort(out)
+  return out
+end
+
+-- Drop expired tags. Without a clock nothing can be proven expired,
+-- so undated tags stay until dismissed.
+function ns.pruneNew(db, now)
+  if type(db) ~= "table" or type(db._new) ~= "table" then return end
+  if type(now) ~= "number" then return end
+  for k, ts in pairs(db._new) do
+    if type(ts) == "number" and now - ts >= ns.NEW_HORIZON then db._new[k] = nil end
+  end
+end
+
+-- A live tag: present and (when dated) inside the horizon.
+function ns.isNew(key, now)
+  local db = ns.db
+  if type(db) ~= "table" or type(db._new) ~= "table" then return false end
+  local ts = db._new[key]
+  if ts == nil then return false end
+  if type(ts) ~= "number" then return true end
+  local t = now or ns.newClock()
+  if type(t) ~= "number" then return true end
+  return t - ts < ns.NEW_HORIZON
+end
+
+-- "(New)" for a Settings label while the tag lives, nothing after.
+function ns.newSuffix(key)
+  if ns.isNew(key) then return " (New)" end
+  return ""
+end
+
+-- Clear every live tag at once; seen flags stay, so nothing re-announces.
+-- Returns the cleared count for the chat line.
+function ns.dismissNew()
+  local db = ns.db
+  if type(db) ~= "table" then return 0 end
+  local n = 0
+  if type(db._new) == "table" then
+    for _ in pairs(db._new) do n = n + 1 end
+    db._new = {}
+  end
+  return n
+end
+
+-- Live tags, sorted for stable output: the persistent face of the
+-- "New" tag (see ns.help). now defaults to the wall clock.
+function ns.liveNewKeys(now)
+  local out = {}
+  local db = ns.db
+  if type(db) ~= "table" or type(db._new) ~= "table" then return out end
+  local t = now or ns.newClock()
+  for k in pairs(db._new) do
+    local ts = db._new[k]
+    if type(ts) ~= "number" or type(t) ~= "number" or t - ts < ns.NEW_HORIZON then
+      out[#out + 1] = k
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+-- Diff and tag. pending holds scanMissing from before the fill; fresh
+-- marks a first install (silent fill, seen but untagged). Tags apply
+-- here, at load, so the Settings panel built right after renders them;
+-- the chat lines wait for LOGIN (ns.announceNewTags), when chat is up.
+-- Runs once per session: consumes ns.pendingNew. Never errors.
+function ns.applyNewTags()
+  local db = ns.db
+  local pending = ns.pendingNew
+  local fresh = ns.freshProfile == true
+  ns.pendingNew = nil
+  ns.freshProfile = nil
+  if type(db) ~= "table" or type(pending) ~= "table" then return end
+  if type(db._seen) ~= "table" then db._seen = {} end
+  if type(db._new) ~= "table" then db._new = {} end
+  ns.pruneNew(db, ns.newClock())
+  -- A second apply in the same session finds nothing pending and
+  -- leaves the DB untouched.
+  ns.pendingAnnounce = ns.pendingAnnounce or {}
+  for _, k in ipairs(pending) do
+    if not ns.NEW_DENYLIST[k] then
+      db._seen[k] = true
+      if not fresh and defaults[k] == true and db._seen[k] ~= "announced" then
+        local now = ns.newClock()
+        db._new[k] = now or true
+        db._seen[k] = "announced"
+        ns.pendingAnnounce[#ns.pendingAnnounce + 1] =
+          "new on: " .. (ns.NEW_BLURBS[k] or k) .. " (/vxp dismiss clears new tags)"
+      end
+    end
+  end
+  -- The mode-entry line below already covered repMode for veterans;
+  -- the tag line above covers it for newcomers, so keep one of them.
+  if db._new.repMode ~= nil then db.repAnnounced = true end
+end
+
+-- Deliver the stashed tag lines once, at LOGIN when chat is up (the
+-- ENTERING_WORLD fallback covers a missed LOGIN). Undelivered lines
+-- die with the session, but the tags persist: help still lists them
+-- and dismiss still clears them.
+function ns.announceNewTags()
+  local lines = ns.pendingAnnounce
+  ns.pendingAnnounce = nil
+  if type(lines) ~= "table" then return end
+  for _, line in ipairs(lines) do ns.say(line) end
+end
 
 local function fmt(n)
   if n >= 1e6 then return ("%.1fm"):format(n / 1e6) end
@@ -709,6 +993,7 @@ local function resetTrackers()
   rateTracker = ns.newTracker(clock())
   etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
   ns.clearSummary() -- observation restarts: the old burst never reports
+  pendingAnnounce = nil -- a queued copy belongs to the old session: drop it
 end
 
 -- Net gain summary (Plumber's LootUI pattern, original code: a 0.15s
@@ -1838,12 +2123,23 @@ end
 
 -- The tooltip carries the engine the bar replaced: the rate line, the
 -- rested and quest reach, the bonus list, and the missing list. It
--- never fires mid-drag: our own drag flag guards it, which keeps the
--- promise without touching an unverified global.
+-- never fires mid-drag: our own drag flag guards it, and a
+-- presence-gated IsMouseButtonDown covers drags the flag missed
+-- (verified live + forever, InputDocumentation).
 local dragging = false
 
+local function pressed()
+  if dragging then return true end
+  if type(IsMouseButtonDown) == "function" then
+    local ok, down = pcall(IsMouseButtonDown)
+    if ok and down then return true end
+  end
+  return false
+end
+ns.tooltipSuppressed = pressed
+
 function ns.showRepTip()
-  if dragging then return end
+  if pressed() then return end
   if type(GameTooltip) ~= "table" then return end
   local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
   local est = repEstimate(progress)
@@ -1886,7 +2182,7 @@ function ns.showRepTip()
 end
 
 function ns.showTip()
-  if dragging then return end
+  if pressed() then return end
   if type(GameTooltip) ~= "table" then return end
   if mode == "rep" then ns.showRepTip() return end
   local est = ns.estimate(rateTracker, clock(), baseline, paused)
@@ -2182,7 +2478,7 @@ local function onRep(gainedID, updatedStanding, renownLevel)
         end
       end
       local rankMsg = ns.repRankMessage(repBaseline, snap)
-      if rankMsg then ns.say(rankMsg) end
+      if rankMsg then ns.say(rankMsg) end -- dings alone route: ranks stay local
       repBaseline = snap
     end
   end
@@ -2226,7 +2522,9 @@ local function onLevelUp()
   if baseline ~= nil
       and type(baseline.level) == "number" and type(snap.level) == "number"
       and snap.level > baseline.level then
-    ns.say(("level %d reached"):format(snap.level))
+    local line = ("level %d reached"):format(snap.level)
+    ns.say(line)
+    ns.announce(line)
   end
   baseline = snap
   if snap.capped then activateMode(snap) end
@@ -2253,9 +2551,13 @@ function ns.ensureSettings()
   local db = opts() -- bound, defaulted table
   local function check(key, label, tooltip, onChange)
     local s = Settings.RegisterAddOnSetting(
-      category, "VocXP_" .. key, key, db, type(defaults[key]), label, defaults[key])
-    Settings.CreateCheckbox(category, s, tooltip)
+      category, "VocXP_" .. key, key, db, type(defaults[key]), label .. ns.newSuffix(key), defaults[key])
+    local init = nil
+    if type(Settings.CreateCheckbox) == "function" then
+      init = Settings.CreateCheckbox(category, s, tooltip)
+    end
     ns.onSettingChanged(s, onChange)
+    return s, init
   end
   check("shown", "Show the bar",
     "Show the bar: XP with XP/hr and bonuses while leveling, reputation with Rep/hr at max level.",
@@ -2266,12 +2568,44 @@ function ns.ensureSettings()
   check("hideDefault", "Hide the default XP bar",
     "Hide Blizzard's status bar cluster while VocXP shows. Watched reputation and honor bars hide with it.",
     function() refresh() end)
-  check("repMode", "Track reputation at max level",
+  local _, repInit = check("repMode", "Track reputation at max level",
     "At max level, follow the watched faction (or the latest gains) with Rep/hr and time to the next rank.",
     function() activateMode(readSnapshot()) refresh() end)
-  check("followLatest", "Follow latest reputation gains",
-    "In reputation mode, always track the faction you most recently earned, even when another faction is watched.",
+  local _, followInit = check("followLatest", "Follow latest reputation gains",
+    "Always track the latest reputation gains, even when another faction is watched. Needs Track reputation at max level.",
     function() if mode == "rep" then ns.maybeSwitchRep() end refresh() end)
+  -- Child gates on its parent (FAMILY.md "Settings"): off shows
+  -- disabled with the reason on the row, never hidden. Blizzard's own
+  -- Graphics panel gates the same way (SetParentInitializer with a
+  -- live predicate, live + forever); the child re-evaluates on every
+  -- parent change. Presence-gated: without it both rows stay enabled.
+  if type(repInit) == "table" and type(followInit) == "table"
+      and type(followInit.SetParentInitializer) == "function" then
+    pcall(followInit.SetParentInitializer, followInit, repInit,
+      function() return opts().repMode end)
+  end
+  -- Announce routing: a dropdown, not a checkbox. Presence-gated like
+  -- every version-locked widget: without the dropdown API the slash
+  -- command below still sets the channel.
+  if type(Settings.CreateDropdown) == "function"
+      and type(Settings.CreateControlTextContainer) == "function" then
+    local function announceOptions()
+      local container = Settings.CreateControlTextContainer()
+      container:Add("off", "Off")
+      container:Add("party", "Party")
+      container:Add("guild", "Guild")
+      return container:GetData()
+    end
+    local s = Settings.RegisterAddOnSetting(
+      category, "VocXP_announce", "announce", db, type(defaults.announce),
+      "Announce dings to", defaults.announce)
+    Settings.CreateDropdown(category, s, announceOptions,
+      "Send the ding line to party or guild chat as well as your own. Off keeps it local.")
+    ns.onSettingChanged(s, function()
+      refresh()
+      click(opts().announce ~= "off")
+    end)
+  end
   check("locked", "Lock the position",
     "Keep the bar where it is. Unlocked, drag it anywhere; it remembers.",
     function() refresh() end)
@@ -2288,6 +2622,7 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_MAX_LEVEL_UPDATE")
+frame:RegisterEvent("ADDON_ACTION_BLOCKED")
 frame:SetScript("OnEvent", function(_, event, arg1, arg2)
   if event == "ADDON_LOADED" then
     -- The client replaces the SavedVariables global with the loaded
@@ -2295,10 +2630,16 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
     if arg1 ~= name then return end
     if type(VocXPDB) ~= "table" then VocXPDB = {} end
     ns.db = VocXPDB
+    -- Snapshot the missing-keys diff BEFORE the fill below: opts()
+    -- fills every default, so after this point nothing reads as new.
+    ns.pendingNew = ns.scanMissing(ns.db)
+    ns.freshProfile = next(ns.db) == nil
+    ns.applyNewTags() -- tags before the panel build, so rows render them
     ns.ensureSettings()
     return
   elseif event == "PLAYER_LOGIN" then
     ns.ensureSettings() -- in case Settings wasn't up at ADDON_LOADED
+    ns.announceNewTags() -- chat is up: announce auto-enabled features once
     return
   elseif event == "PLAYER_MAX_LEVEL_UPDATE" then
     -- Cap raised (or lowered): re-derive the mode from a fresh
@@ -2310,6 +2651,7 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
   elseif event == "PLAYER_ENTERING_WORLD" then
     ns.db = VocXPDB or ns.db -- client replaced the file-top table
     ns.ensureSettings()
+    ns.announceNewTags() -- one-shot; LOGIN already consumed it in practice
     ns.subscribeEditMode()
     local o = opts()
     pcall(frame.ClearAllPoints, frame)
@@ -2364,6 +2706,10 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
       onRep(arg1, nil, true)
     elseif event == "FACTION_STANDING_CHANGED" then
       onRep(arg1, arg2, false)
+    elseif event == "PLAYER_REGEN_ENABLED" then
+      ns.flushAnnounce() -- combat's end releases one queued copy, if any
+    elseif event == "ADDON_ACTION_BLOCKED" then
+      ns.onActionBlocked(arg1, arg2) -- our own taint blocks, for diag
     elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN"
         or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED"
         or event == "QUEST_COMPLETE" then
@@ -2471,6 +2817,52 @@ function VocXP_CompartmentLeave()
   if type(GameTooltip) == "table" then GameTooltip:Hide() end
 end
 
+-- Diagnostics for a live ding test (/vxp diag): one player-initiated
+-- dump of the announcement inputs, so a level-up can be reported with
+-- facts instead of memory. Prints only when asked: no new events, no
+-- timers, no spam. Every read is nil-safe and every external call is
+-- presence-gated and pcall-guarded like the live path, so diag itself
+-- never errors (and never needs BugGrabber to explain BugGrabber).
+function ns.diagCapture()
+  local grabber, sack = false, false
+  if type(C_AddOns) == "table" and type(C_AddOns.IsAddOnLoaded) == "function" then
+    local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "!BugGrabber")
+    if ok and loaded then grabber = true end
+    ok, loaded = pcall(C_AddOns.IsAddOnLoaded, "BugSack")
+    if ok and loaded then sack = true end
+  end
+  return grabber, sack
+end
+
+-- One-line summary of the announcement inputs. Nil-safe: an unknown
+-- snapshot reads as unknown, never an error, mirroring readSnapshot's
+-- unknown shape.
+function ns.diagText(snap, modeStr, isPaused, flavor, cap, grabber, sack)
+  local head = "level unknown"
+  if type(snap) == "table" and type(snap.level) == "number" then
+    if snap.capped then
+      head = ("level %d (capped)"):format(snap.level)
+    elseif type(snap.xp) == "number" and type(snap.req) == "number" and snap.req > 0 then
+      local pct = math.floor(snap.xp / snap.req * 100 + 0.5)
+      head = ("%d, %d/%d (%d%%)"):format(snap.level, snap.xp, snap.req, pct)
+      head = "level " .. head
+    else
+      head = ("level %d (xp unknown)"):format(snap.level)
+    end
+  end
+  if type(modeStr) ~= "string" or modeStr == "" then modeStr = "unknown" end
+  if type(flavor) ~= "string" or flavor == "" then flavor = "unknown" end
+  local capText = "unknown"
+  if type(cap) == "number" then capText = ("%d"):format(cap) end
+  local capture = "none"
+  if grabber and sack then capture = "BugGrabber+BugSack"
+  elseif grabber then capture = "BugGrabber only"
+  elseif sack then capture = "BugSack only"
+  end
+  return ("%s, mode=%s, paused=%s, flavor=%s, maxLevel=%s, capture=%s"):format(
+    head, modeStr, isPaused and "yes" or "no", flavor, capText, capture)
+end
+
 -- Slash grammar shared by every Voc addon (FAMILY.md): the bare command
 -- does the one main thing, `config` opens the panel, `help` lists the
 -- rest, and anything unrecognized prints help instead of acting.
@@ -2480,6 +2872,9 @@ ns.HELP = {
   "/vxp pause     pause or resume tracking",
   "/vxp reset     restart the session",
   "/vxp rep       reputation tracking on or off",
+  "/vxp announce  ding lines to party, guild, or off",
+  "/vxp diag      dump snapshot and capture state for a bug report",
+  "/vxp dismiss   clear new-feature tags",
   "/vxp config    open Settings > AddOns > VocXP",
   "/vxp help      this list (/vocxp works too)",
 }
@@ -2487,6 +2882,11 @@ ns.HELP = {
 function ns.help()
   ns.say("commands")
   for _, line in ipairs(ns.HELP) do print("  " .. line) end
+  -- The tag's persistent face: live New tags read here until they
+  -- expire or dismiss clears them. ns.HELP stays static for the check.
+  for _, key in ipairs(ns.liveNewKeys()) do
+    print("  new: " .. (ns.NEW_BLURBS[key] or key))
+  end
 end
 
 -- Blizzard's slash dispatcher reads SLASH_* globals by name, so these
@@ -2494,7 +2894,7 @@ end
 SLASH_VOCXP1 = "/vxp"
 SLASH_VOCXP2 = "/vocxp"
 SlashCmdList.VOCXP = function(msg)
-  msg = strtrim(msg or ""):lower()
+  msg = strtrim(tostring(msg or "")):lower()
   if msg == "" then
     ns.toggle()
   elseif msg == "lock" then
@@ -2531,6 +2931,41 @@ SlashCmdList.VOCXP = function(msg)
     refresh()
     click(o.repMode)
     ns.say(o.repMode and "reputation tracking on" or "reputation tracking off")
+  elseif msg == "announce" then
+    ns.say("ding announcements to " .. ns.announceChannel() .. " (off, party, or guild)")
+  elseif msg == "announce off" or msg == "announce party" or msg == "announce guild" then
+    local o = opts()
+    o.announce = msg:sub(10)
+    refresh()
+    click(o.announce ~= "off")
+    ns.say("ding announcements to " .. o.announce)
+  elseif msg:sub(1, 9) == "announce " then
+    ns.say("announce off, party, or guild (now " .. ns.announceChannel() .. ")")
+  elseif msg == "diag" then
+    local snap = readSnapshot()
+    local grabber, sack = ns.diagCapture()
+    ns.say("diag " .. ns.diagText(snap, mode, paused, ns.clientFlavor(), ns.effectiveMaxLevel(), grabber, sack))
+    if grabber then
+      print("  capture: BugGrabber loaded" .. (sack and ", BugSack loaded" or ", BugSack missing (/bugsack stays shut)"))
+    else
+      print("  capture: !BugGrabber missing, Lua errors will not persist (install !BugGrabber + BugSack)")
+    end
+    local channel = ns.announceChannel()
+    local route = "lines stay local"
+    if channel == "guild" then
+      route = ns.inGuildNow() and "guild chat reachable" or "guild chat unreachable, lines stay local"
+    elseif channel == "party" then
+      route = ns.inGroupNow() and "party chat reachable" or "solo, lines stay local"
+    end
+    print("  announce: " .. channel .. " (" .. route .. ")")
+    if ns.lastBlock ~= nil then
+      print("  last block: " .. ns.lastBlock .. " (a routed copy died to taint; see BugSack)")
+    end
+    print("  after the ding: /reload, then read WTF/Account/<account>/SavedVariables/!BugGrabber.lua")
+  elseif msg == "dismiss" then
+    local n = ns.dismissNew()
+    click(n > 0)
+    ns.say(n > 0 and ("cleared " .. n .. (n == 1 and " new tag" or " new tags")) or "no new tags")
   elseif msg == "config" then
     ns.openConfig()
   else

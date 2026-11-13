@@ -11,6 +11,7 @@
   "globals": {
     "read": [
       "C_AddOns",
+      "C_ChatInfo",
       "C_GossipInfo",
       "C_MajorFactions",
       "C_Reputation",
@@ -27,6 +28,10 @@
       "GetTime",
       "GetXPExhaustion",
       "IsInInstance",
+      "IsInGuild",
+      "IsInGroup",
+      "LE_PARTY_CATEGORY_HOME",
+      "LE_PARTY_CATEGORY_INSTANCE",
       "IsXPUserDisabled",
       "Settings",
       "StatusTrackingBarManager",

@@ -5,8 +5,7 @@
 - `main.lua`: the whole addon: rolling XP/Rep rate, time-to-level, ding and rank-up announcements, bonus list, native-art bar with tooltip readout, Settings panel, slash, compartment
 - `VocXP.toc` / `VocXP_Camelot.toc`: addon metadata (dual toc, shared `main.lua`; no `RequiredDeps`)
 - `tests/run.lua`: stub-harness regression tests (`lua tests/run.lua`)
-- `FAMILY.md`: conventions shared by every Voc addon
-- `VERSIONING.md`: tag-driven semver releases (identical across the family)
+- Family contract: canonical in the `voc-addons` skill (`family/FAMILY.md`, `family/VERSIONING.md`)
 - `.luacheckrc`: lint config declaring the addon's globals
 - `.reference/api-verification.md`: per-API verification record (gitignored)
 - `.reference/`: local analysis checkouts, never packaged or committed
@@ -39,9 +38,8 @@ a local-checkout recipe: `FAMILY.md`, Sources of truth.
 ## Family
 
 VocXP is one of the Voc addons. Naming, slash grammar, chat voice,
-sounds, palette, settings, layout, and docs follow `FAMILY.md`; that
-file is identical in every sibling repo, so edit it everywhere or not
-at all. Debugging follows `FAMILY.md` "Debugging": !BugGrabber +
+sounds, palette, settings, layout, and docs follow the family contract,
+Debugging follows `FAMILY.md` "Debugging": !BugGrabber +
 BugSack, errors read from `!BugGrabber.lua` after `/reload`.
 Craft follows the `voc-addons` skill, the source of truth for how Voc
 addons look, feel, and behave; load it before UI, settings, tooltip,
@@ -66,7 +64,7 @@ Tests are excluded from the packaged addon (see `.pkgmeta`).
 
 ## Releases
 
-Follow `VERSIONING.md` when cutting a release; never retag.
+Follow the release flow in the `voc-addons` skill (`family/VERSIONING.md`); never retag.
 
 ## Live testing
 
