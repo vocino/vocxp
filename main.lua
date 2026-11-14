@@ -2485,6 +2485,24 @@ local function onRep(gainedID, updatedStanding, renownLevel)
   refresh()
 end
 
+-- The ding: one chat fact when the fresh snapshot sits above the
+-- baseline level, whichever event sees it first. The turn-in reads
+-- "Experience gained" before "Congratulations" because
+-- PLAYER_XP_UPDATE can already carry the new level when
+-- PLAYER_LEVEL_UP fires; whoever runs first announces, and the
+-- second sees equal levels and stays silent, so either order reports
+-- exactly once. Announced outside pause: the line is a fact about
+-- the character, not tracked data.
+local function maybeAnnounceDing(old, snap)
+  if old ~= nil
+      and type(old.level) == "number" and type(snap.level) == "number"
+      and snap.level > old.level then
+    local line = ("level %d reached"):format(snap.level)
+    ns.say(line)
+    ns.announce(line)
+  end
+end
+
 -- The XP bar is the single authoritative award source: each update
 -- reconstructs at most one gain from the snapshot delta and stamps it
 -- with the receipt time. Actual awarded XP already includes every
@@ -2492,6 +2510,7 @@ end
 local function onXP()
   local snap = readSnapshot()
   if snap.capped then
+    maybeAnnounceDing(baseline, snap)
     baseline = snap
     activateMode(snap)
     return
@@ -2505,27 +2524,21 @@ local function onXP()
       ns.noteSummaryGain(stamp, "xp", nil, nil, gained)
     end
   end
+  maybeAnnounceDing(baseline, snap)
   baseline = snap
   refresh()
 end
 
--- The ding: one chat fact when the fresh snapshot sits above the
--- baseline level, then a resync with no award -- the XP path stays the
--- single authoritative award source, so event order cannot
--- double-count it. A repeat event at the same level only resyncs; a
--- ding to cap pivots modes below. Announced outside pause: the line
--- is a fact about the character, not tracked data. The fanfare itself
--- stays the client's own: no SOUNDKIT name for it exists in
--- Blizzard's UI source, so the addon adds no sound of its own.
+-- The ding's second chance: usually onXP already announced it above
+-- and this only resyncs with no award -- the XP path stays the single
+-- authoritative award source, so event order cannot double-count it.
+-- When LEVEL_UP runs first it reports here instead. A repeat event at
+-- the same level only resyncs; a ding to cap pivots modes below. The
+-- fanfare itself stays the client's own: no SOUNDKIT name for it
+-- exists in Blizzard's UI source, so the addon adds no sound of its own.
 local function onLevelUp()
   local snap = readSnapshot()
-  if baseline ~= nil
-      and type(baseline.level) == "number" and type(snap.level) == "number"
-      and snap.level > baseline.level then
-    local line = ("level %d reached"):format(snap.level)
-    ns.say(line)
-    ns.announce(line)
-  end
+  maybeAnnounceDing(baseline, snap)
   baseline = snap
   if snap.capped then activateMode(snap) end
 end

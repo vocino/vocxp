@@ -3361,6 +3361,25 @@ do -- PLAYER_LEVEL_UP announces the ding once, then resyncs silently
   check("ding repeats silent", #w.printed == before + 1)
   check("ding paints new level", w.label.text == "11  50/2k (3%)")
 end
+do -- live order: the XP update already reads the new level before LEVEL_UP
+  local w = newWorld()
+  w.level, w.xp, w.max = 28, 41294, 41400
+  w.chatSends = {}
+  w.inGuild = true
+  w.savedVars = { announce = "guild" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.now = w.now + 5
+  w.level, w.xp, w.max = 29, 100, 6000
+  xpEvent(w) -- PLAYER_XP_UPDATE first, carrying the new level
+  levelEvent(w) -- PLAYER_LEVEL_UP after: no second line, no lost ding
+  check("xp-first ding says one local line", #w.printed == before + 1
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: level 29 reached")
+  check("xp-first ding copies once", #w.chatSends == 1
+    and w.chatSends[1].text == "level 29 reached"
+    and w.chatSends[1].chatType == "GUILD")
+end
 do -- a multi-level ding celebrates the new level and resyncs
   local w = newWorld()
   loadAddon(w)
@@ -3487,6 +3506,53 @@ do -- guild routing copies the ding line bare, with no addon prefix
   w.inGuild = false
   check("guildless unavailable", ns.announce("level 25 reached") == "unavailable")
   check("guildless sends nothing", #w.chatSends == 1)
+end
+do -- the level 25 ding to guild: local line plus a plain-text copy
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  w.chatSends = {}
+  w.inGuild = true
+  w.savedVars = { announce = "guild" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("guild ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("guild ding says one local line", #w.printed == before + 1)
+  check("guild ding copies once", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "GUILD")
+end
+do -- guild selected but guildless: the local line keeps the fact, nothing sent
+  local w = newWorld()
+  w.chatSends = {}
+  w.savedVars = { announce = "guild" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("guildless ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("guildless ding says one local line", #w.printed == before + 1)
+  check("guildless ding sends nothing", #w.chatSends == 0)
+end
+do -- guild combat defers the copy; combat's end releases it
+  local w = newWorld()
+  w.chatSends = {}
+  w.inGuild = true
+  w.inCombat = true
+  w.savedVars = { announce = "guild" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("guild combat defers", ns.announce("level 25 reached") == "deferred")
+  check("guild combat sends nothing yet", #w.chatSends == 0)
+  w.inCombat = false
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_REGEN_ENABLED")
+  check("guild regen releases the copy", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "GUILD")
+  check("guild regen flush idles", ns.flushAnnounce() == false)
 end
 do -- /vxp announce reports and sets the channel, never acting on junk
   local w = newWorld()
