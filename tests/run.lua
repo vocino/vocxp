@@ -510,6 +510,9 @@ do -- fresh profile gets all defaults and hides the native bar
   check("fresh followLatest defaults false", ns.db.followLatest == false)
   check("fresh alwaysShow defaults false", ns.db.alwaysShow == false)
   check("fresh announce defaults off", ns.db.announce == "off")
+  check("fresh density defaults standard", ns.db.density == "standard")
+  check("fresh goal defaults empty", ns.db.goal == "")
+  check("fresh repPin defaults auto", ns.db.repPin == 0)
   check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
   check("fresh frame shown", w.frame.shown == true)
   check("fresh native hidden", w.native.shown == false)
@@ -589,7 +592,7 @@ do -- rested overlay reaches past progress and swaps the fill
     and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook")
   check("pip rides rested", w.pip.shown == true and close(w.pip.points[1][4], 452))
   hover(w)
-  check("tooltip rested line", tiphas(w, "Rested: |cFF4D99FF30%|r of level"))
+  check("tooltip rested line", tiphas(w, "Rested: |cFF4D99FF300 XP (30%)|r of level"))
 end
 do -- exhaustion events repaint the rested layer
   local w = newWorld()
@@ -631,7 +634,7 @@ do -- quest overlay spans from progress to the turn-in reach
   check("quest section reads deep gold", w.questFill.vertex[1] == 1
     and w.questFill.vertex[2] == 0.84 and w.questFill.vertex[3] == 0.32)
   hover(w)
-  check("tooltip quest line", tiphas(w, "2 quests ready: |cFFFFD65230%|r of level"))
+  check("tooltip quest line", tiphas(w, "2 quests ready: |cFFFFD652300 XP (30%)|r of level"))
 end
 do -- rested stacks beyond quest: the pip marks true runout past turn-ins
   local w = newWorld()
@@ -653,7 +656,7 @@ do -- one quest reads singular
   setQuests(w, { { id = 11, xp = 1000, ready = true } })
   w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
   hover(w)
-  check("tooltip one quest", tiphas(w, "1 quest ready: |cFFFFD652100%|r of level"))
+  check("tooltip one quest", tiphas(w, "1 quest ready: |cFFFFD6521,000 XP (100%)|r of level"))
 end
 do -- rested overflow follows the native rule
   local w = newWorld()
@@ -807,7 +810,11 @@ do -- slivers show in the overlays but never as 0% lines
   w.xp, w.max = 9428, 69130
   clientLoaded(w)
   hover(w)
-  check("sliver tooltip hides", not tiphas(w, "Rested: 0%"))
+  local sliverShown = false
+  for _, t in ipairs(tiptexts(w)) do
+    if t:sub(1, 7) == "Rested:" then sliverShown = true end
+  end
+  check("sliver tooltip hides", sliverShown == false)
   check("sliver overlay shows", w.restFill.shown == true)
 end
 
@@ -1061,7 +1068,7 @@ do
     and w.gametip.anchor == "ANCHOR_TOP" and w.gametip.shown == true)
   check("tooltip title is gold", w.gametip.title == "Collecting data" and sameColor(w.gametip.titleColor, GOLD_C))
   local lines = tiptexts(w)
-  check("tooltip rate first", w.gametip.title == "Collecting data" and lines[1] == "Collecting data")
+  check("tooltip rate first", w.gametip.title == "Collecting data" and lines[1] == "Early estimate · collecting data")
   check("tooltip ends on the gap", lines[#lines] == "Well Fed · kill XP (eat food)")
 end
 do -- full stack orders every section
@@ -1076,9 +1083,14 @@ do -- full stack orders every section
   hover(w)
   check("tooltip order title", w.gametip.title == "0 XP/hr")
   check("tooltip order", table.concat(tiptexts(w), "|") == table.concat({
-    "Warming up · last 1m of 10m",
-    "Rested: |cFF4D99FF50%|r of level",
-    "1 quest ready: |cFFFFD65210%|r of level",
+    "Early estimate · last 1m of 10m",
+    "Level 10 · 0 / 1,000 (0%)",
+    "Rested: |cFF4D99FF500 XP (50%)|r of level",
+    "Kills earn double · 1 rested per 1 base XP",
+    "Quests are not doubled and cost no rested",
+    "Cap: 1,500 XP (150% of a level)",
+    "1 quest ready: |cFFFFD652100 XP (10%)|r of level",
+    "Session: +0 XP · 1m",
     " ",
     "Bonuses",
     "No XP bonus",
@@ -1093,7 +1105,7 @@ do -- bonus and gap colors
   check("no-bonus red", sameColor(tipcolor(w, "No XP bonus"), RED_C))
   check("gap muted", sameColor(tipcolor(w, "Well Fed · kill XP (eat food)"), MUTED_C))
   local sub = w.gametip.lines[1]
-  check("sub muted", sub.text == "Collecting data"
+  check("sub muted", sub.text == "Early estimate · collecting data"
     and sameColor({ sub.r, sub.g, sub.b }, MUTED_C))
 end
 do -- reach stats ride double lines with inline-colored values
@@ -1111,8 +1123,8 @@ do -- reach stats ride double lines with inline-colored values
     if l.double and l.left == "Rested:" then reach = l end
     if l.double and l.left == "1 quest ready:" then quest = l end
   end
-  check("rested rides a double", reach ~= nil and reach.right == "|cFF4D99FF30%|r of level")
-  check("quest rides a double", quest ~= nil and quest.right == "|cFFFFD65210%|r of level")
+  check("rested rides a double", reach ~= nil and reach.right == "|cFF4D99FF300 XP (30%)|r of level")
+  check("quest rides a double", quest ~= nil and quest.right == "|cFFFFD652100 XP (10%)|r of level")
   check("doubles wear body text", reach ~= nil and sameColor({ reach.r, reach.g, reach.b }, { 1, 1, 1 }))
 end
 do -- hex comes from the palette, never a literal
@@ -1338,7 +1350,7 @@ do
   w.xp = 3600
   xpEvent(w)
   hover(w)
-  check("early gain collects", w.gametip.title == "1.3m XP/hr" and tiptexts(w)[1] == "Collecting data")
+  check("early gain collects", w.gametip.title == "1.3m XP/hr" and tiptexts(w)[1] == "Early estimate · collecting data")
   w.now = w.now + 290
   w.tickers[1].fn()
   hover(w)
@@ -1494,7 +1506,7 @@ do -- aura changes refresh the tooltip
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
   hover(w)
   check("no aura yet", tiphas(w, "No XP bonus"))
-  check("partial seconds sub", tiptexts(w)[1] == "Warming up · last 45s of 10m")
+  check("partial seconds sub", tiptexts(w)[1] == "Early estimate · last 45s of 10m")
   w.aurasByName["Well Fed"] = {}
   w.native.shown = true -- simulated Edit Mode reshow
   w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "target")
@@ -1862,14 +1874,16 @@ do
     == "120k XP/hr · <1m")
   check("ready sub", ns.subText({ status = "ready", observedSeconds = 600, windowSeconds = 600 }) == "Last 10m")
   check("warming sub", ns.subText({ status = "warming-up", observedSeconds = 120, windowSeconds = 600 })
-    == "Warming up · last 2m of 10m")
+    == "Early estimate · last 2m of 10m")
   check("warming seconds sub", ns.subText({ status = "warming-up", observedSeconds = 45, windowSeconds = 600 })
-    == "Warming up · last 45s of 10m")
+    == "Early estimate · last 45s of 10m")
+  check("long warming stays warming", ns.subText({ status = "warming-up", observedSeconds = 300, windowSeconds = 600 })
+    == "Warming up · last 5m of 10m")
   check("idle sub", ns.subText({ status = "idle", observedSeconds = 600, windowSeconds = 600, idleSeconds = 150 })
     == "Idle 2m · last 10m")
   check("silent sub", ns.subText({ status = "no-recent-xp", observedSeconds = 600, windowSeconds = 600 })
     == "No XP in the last 10m")
-  check("collecting sub", ns.subText({ status = "collecting" }) == "Collecting data")
+  check("collecting sub", ns.subText({ status = "collecting" }) == "Early estimate · collecting data")
   check("awaiting sub", ns.subText({ status = "awaiting-level-update" })
     == "Level complete; awaiting update")
   check("unavailable sub", ns.subText({ status = "unavailable" }) == "Waiting for XP data")
@@ -2300,17 +2314,17 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("seven options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+  check("eight options registered", keys.shown ~= nil and keys.hideDefault ~= nil
     and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and keys.alwaysShow ~= nil
-    and keys.announce ~= nil and #w.settingsReg == 7)
+    and keys.announce ~= nil and keys.density ~= nil and #w.settingsReg == 8)
   check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
-    and keys.hideDefault.tbl == w.env.VocXPDB)
+    and keys.hideDefault.tbl == w.env.VocXPDB and keys.density.tbl == w.env.VocXPDB)
   check("six checkboxes", w.settingsChecks == 6)
   check("defaults match", keys.shown.default == true and keys.hideDefault.default == true
     and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false
-    and keys.alwaysShow.default == false)
+    and keys.alwaysShow.default == false and keys.density.default == "standard")
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 7)
+  check("built once", #w.settingsReg == 8)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)
@@ -2995,8 +3009,9 @@ do -- full tooltip order in rep mode; XP-only buffs stay out
   hover(w)
   check("rep tooltip order title", w.gametip.title == "Collecting data")
   check("rep tooltip order", table.concat(tiptexts(w), "|") == table.concat({
-    "Collecting data",
+    "Early estimate · collecting data",
     "Court: Honored · 33% to Revered",
+    "Session: +0 XP · <1m",
     " ",
     "Bonuses",
     "+10% WHEE!",
@@ -4511,5 +4526,203 @@ do -- the tooltip never fires mid-drag, flag or mouse button
   w.env.IsMouseButtonDown = function() return false end
   hover(w)
   check("released button restores the tip", w.gametip.shown == true)
+end
+
+-- 54. Exact numbers, commas, and relative stamps.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("commas groups", ns.commas(125400) == "125,400")
+  check("commas small", ns.commas(999) == "999" and ns.commas(0) == "0")
+  check("commas bad reads dash", ns.commas(nil) == "-" and ns.commas(0 / 0) == "-")
+  check("ago just now", ns.ago(5) == "just now" and ns.ago(nil) == "just now")
+  check("ago seconds", ns.ago(12) == "12s ago")
+  check("ago minutes", ns.ago(120) == "2m ago")
+  check("ago hours", ns.ago(7500) == "2h 5m ago")
+  check("progress line", ns.progressLine({ level = 42, xp = 125400, req = 210000, capped = false })
+    == "Level 42 · 125,400 / 210,000 (60%)")
+  check("progress capped nil", ns.progressLine({ level = 90, xp = 0, req = 1, capped = true }) == nil)
+  check("progress invalid nil", ns.progressLine(nil) == nil)
+  check("rested text", ns.restedText(45000, 210000) == "|cFF4D99FF45,000 XP (21%)|r")
+  check("rested zero nil", ns.restedText(0, 1000) == nil and ns.restedText(nil, 1000) == nil)
+  check("quest text", ns.questText(1240, 2, 10000) == "|cFFFFD6521,240 XP (12%)|r")
+  check("quest zero nil", ns.questText(0, 0, 1000) == nil)
+end
+
+-- 55. Bar text density: minimal, standard, full.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local snap = { level = 10, xp = 250, req = 1000, capped = false }
+  local seg = ns.barSegments(snap)
+  local est = { status = "ready", xpPerHour = 13000, etaSeconds = 4200 }
+  local o = ns.opts()
+  check("density defaults standard", ns.density() == "standard")
+  check("standard label", ns.xpLabel(o, est, snap, seg) == "10  250/1k (25%)")
+  ns.db.density = "minimal"
+  check("minimal label", ns.xpLabel(o, est, snap, seg) == "25%")
+  ns.db.density = "full"
+  check("full label", ns.xpLabel(o, est, snap, seg) == "250/1k (25%) · 13k XP/hr - 1h 10m")
+  ns.db.density = "bogus"
+  check("bogus density repairs", ns.density() == "standard")
+  w.env.SlashCmdList.VOCXP("density minimal")
+  check("slash sets density", ns.db.density == "minimal")
+  check("slash density confirms", w.printed[#w.printed] == "|cff66ccffVocXP|r: bar text minimal")
+  w.env.SlashCmdList.VOCXP("density bogus")
+  check("slash bad density keeps", ns.db.density == "minimal")
+  w.env.SlashCmdList.VOCXP("density")
+  check("slash density reports", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: bar text minimal (minimal, standard, or full)")
+end
+do -- rep density follows the same shapes
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local progress = ns.readRepProgress(101)
+  local est = { status = "ready", unit = "Rep", xpPerHour = 1200, etaSeconds = 10800 }
+  ns.db.density = "minimal"
+  check("rep minimal", ns.repLabel(ns.opts(), est, progress) == "33%")
+  ns.db.density = "full"
+  check("rep full", ns.repLabel(ns.opts(), est, progress) == "3k/9k (33%) · 1k Rep/hr - 3h")
+  ns.db.density = "standard"
+  check("rep standard", ns.repLabel(ns.opts(), est, progress) == "Court  3k/9k (33%)")
+end
+
+-- 56. Session totals and gain memory.
+do
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.now = w.now + 60
+  w.xp = 300
+  xpEvent(w)
+  w.now = w.now + 30
+  w.xp = 900
+  xpEvent(w)
+  local wns = w.ns
+  local rows = wns.historyRows(w.now)
+  check("history newest first", #rows == 2
+    and rows[1] == "+600 XP · just now" and rows[2] == "+300 XP · 30s ago")
+  hover(w)
+  check("session totals", tiphas(w, "Session: +900 XP · 2m"))
+  check("history in tip", tiphas(w, "+600 XP · just now"))
+  w.env.SlashCmdList.VOCXP("pause")
+  hover(w)
+  check("pause freezes session", tiphas(w, "Session: +900 XP · Paused"))
+  w.env.SlashCmdList.VOCXP("pause")
+  w.env.SlashCmdList.VOCXP("reset")
+  check("reset clears history", #wns.historyRows(w.now) == 0)
+  hover(w)
+  check("reset clears session", tiphas(w, "Session: +0 XP · <1m"))
+  w.now = w.now + 400
+  hover(w)
+  check("idle pauses timer", tiphas(w, "Session: +0 XP · 5m · timer paused (idle)"))
+end
+do -- memory keeps five, rejects the rest
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  for i = 1, 7 do ns.noteHistory(w.now + i, "xp", 100 * i, nil) end
+  local rows = ns.historyRows(w.now + 7)
+  check("history caps at five", #rows == 5
+    and rows[1] == "+700 XP · just now" and rows[5] == "+300 XP · just now")
+  check("history rejects zero", ns.noteHistory(w.now, "xp", 0, nil) == false)
+  check("history rejects kind", ns.noteHistory(w.now, "gold", 100, nil) == false)
+end
+do -- quest turn-ins are named, plain kills are not
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.xp, w.max = 0, 100000
+  w.frame.scripts.OnEvent(w.frame, "QUEST_TURNED_IN", 11)
+  w.now = w.now + 1
+  w.xp = 1240
+  xpEvent(w)
+  hover(w)
+  check("turn-in named", tiphas(w, "+1,240 XP · Quest · just now"))
+end
+
+-- 57. Goal mode: set, report, clear, and reach.
+do
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.env.SlashCmdList.VOCXP("goal 50")
+  check("goal sets", ns.db.goal == "50")
+  check("goal confirms", w.printed[#w.printed] == "|cff66ccffVocXP|r: goal 50")
+  hover(w)
+  check("goal renders", tiphas(w, "Goal 50: ~40k XP"))
+  w.env.SlashCmdList.VOCXP("goal bogus")
+  check("goal rejects words", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: goal takes a level or rank number, or clear")
+  check("goal keeps old", ns.db.goal == "50")
+  w.env.SlashCmdList.VOCXP("goal")
+  check("goal reports", w.printed[#w.printed] == "|cff66ccffVocXP|r: goal 50")
+  w.env.SlashCmdList.VOCXP("goal clear")
+  check("goal clears", ns.db.goal == "" and w.printed[#w.printed] == "|cff66ccffVocXP|r: goal cleared")
+end
+do -- a ding past the goal clears it with one line
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.db.goal = "11"
+  w.xp, w.max, w.level = 100, 2000, 11
+  w.now = w.now + 3600
+  xpEvent(w)
+  check("goal reached clears", ns.db.goal == "")
+  check("goal reached announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: goal reached (level 11)")
+end
+do -- the goal names time and turn-ins when there is data
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.db.goal = "12"
+  setQuests(w, { { id = 11, xp = 500, ready = true }, { id = 12, xp = 500, ready = true } })
+  w.frame.scripts.OnEvent(w.frame, "QUEST_LOG_UPDATE")
+  w.now = w.now + 3600
+  w.xp = 900
+  xpEvent(w)
+  hover(w)
+  check("goal full line", tiphas(w, "Goal 12: ~2k XP · ~34m · ~4 turn-ins at current average (500)"))
+end
+do -- rep goals name the rank
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  ns.db.goal = "7"
+  hover(w)
+  check("rep goal renders", tiphas(w, "Goal Revered: ~9k rep"))
+end
+
+-- 58. Rep pin: track by name or ID, auto to release.
+do
+  local w = newWorld()
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 },
+    { id = 202, name = "Wardens", reaction = 5, lo = 3000, hi = 9000, standing = 5000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("auto follows watched", ns.repTracked() == 101)
+  w.env.SlashCmdList.VOCXP("rep track Wardens")
+  check("track pins by name", ns.db.repPin == 202 and ns.repTracked() == 202)
+  check("track confirms", w.printed[#w.printed] == "|cff66ccffVocXP|r: pinned to Wardens")
+  hover(w)
+  check("tip names the pin", tiphas(w, "Pinned to Wardens"))
+  w.env.SlashCmdList.VOCXP("rep track 101")
+  check("track pins by ID", ns.db.repPin == 101 and ns.repTracked() == 101)
+  w.env.SlashCmdList.VOCXP("rep auto")
+  check("auto clears the pin", ns.db.repPin == 0 and ns.repTracked() == 101)
+  check("auto confirms", w.printed[#w.printed] == "|cff66ccffVocXP|r: following watched or latest gains")
+  w.env.SlashCmdList.VOCXP("rep track Nobody")
+  check("unknown name keeps auto", ns.db.repPin == 0
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: no readable faction matches nobody")
 end
 print("tests/run.lua: " .. passed .. " checks passed")

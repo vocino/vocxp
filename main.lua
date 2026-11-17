@@ -3,13 +3,14 @@ local name, ns = ...
 -- active XP bonuses. Nothing else.
 --
 -- Map, in file order: chat voice and routed ding copies; confirmation
--- sounds; palette; defaults and new-feature onboarding; the rolling
--- estimator; bar art, native geometry, and show/hide; burst summaries;
--- the bonus registry; bonus and missing lines; bar segments, quest XP,
--- and rested; reputation progress; native bar hiding and Edit Mode
--- cooperation; refresh and the tooltip; modes; snapshots, ranks, and
--- dings; the Settings panel; toggle, lock, and the rival notice; the
--- compartment, diagnostics, and slash.
+-- sounds; palette; defaults, density, and new-feature onboarding; the
+-- rolling estimator; bar art, native geometry, and show/hide; burst
+-- summaries, session totals, gain memory, and goal mode; the bonus
+-- registry; bonus and missing lines; bar segments, quest XP, and
+-- rested; reputation progress and the rep pin; native bar hiding and
+-- Edit Mode cooperation; refresh and the tooltip; modes; snapshots,
+-- ranks, and dings; the Settings panel; toggle, lock, and the rival
+-- notice; the compartment, diagnostics, and slash.
 
 
 VocXPDB = VocXPDB or {}
@@ -196,7 +197,7 @@ local COLORS = ns.COLORS
 -- holding the wrong type resets; unknown keys are left alone.
 local defaults = { shown = true, locked = false, hideDefault = true,
   repMode = true, followLatest = false, alwaysShow = false,
-  announce = "off",
+  announce = "off", density = "standard", goal = "", repPin = 0,
   point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local VALID_POINTS = {
@@ -222,9 +223,21 @@ local function opts()
   -- every login; fall back to the default instead of breaking the bar.
   if not VALID_POINTS[ns.db.point] then ns.db.point = defaults.point end
   if not ns.ANNOUNCE_CHANNELS[ns.db.announce] then ns.db.announce = defaults.announce end
+  if not ns.DENSITIES[ns.db.density] then ns.db.density = defaults.density end
+  if type(ns.db.goal) ~= "string" then ns.db.goal = defaults.goal end
+  if type(ns.db.repPin) ~= "number" then ns.db.repPin = defaults.repPin end
   return ns.db
 end
 ns.opts = opts
+
+-- Bar text density: minimal is percent only, standard is today's label,
+-- full adds exact numbers to the rate line. Anything else reads standard.
+ns.DENSITIES = { minimal = true, standard = true, full = true }
+function ns.density()
+  local d = opts().density
+  if d == "minimal" or d == "standard" or d == "full" then return d end
+  return "standard"
+end
 
 -- New-feature onboarding (voc-addons principle 5): defaults are the
 -- onboarding, so a key missing from the DB turns on. A missing key
@@ -436,6 +449,28 @@ local function finite(v)
   return v == v and v ~= math.huge and v ~= -math.huge
 end
 
+-- Exact numbers for the tooltip ("125,400"). Compact fmt stays on the bar.
+function ns.commas(n)
+  if not finite(n) then return "-" end
+  local neg = n < 0
+  local s = tostring(math.floor(math.abs(n) + 0.5))
+  local out = ""
+  while #s > 3 do
+    out = "," .. s:sub(-3) .. out
+    s = s:sub(1, -4)
+  end
+  return (neg and "-" or "") .. s .. out
+end
+
+-- Relative stamp for gain history ("12s ago", "2m ago", "1h 5m ago").
+function ns.ago(secs)
+  if not finite(secs) then return "just now" end
+  if secs < 10 then return "just now" end
+  if secs < 60 then return ("%ds ago"):format(math.floor(secs)) end
+  if secs < 3600 then return ("%dm ago"):format(math.floor(secs / 60)) end
+  return ns.formatEtaLong(secs) .. " ago"
+end
+
 -- Monotonic clock, guarded: a missing GetTime (data not loaded yet)
 -- reads 0 instead of erroring; trackers started on 0 resync on the
 -- first real stamp.
@@ -600,6 +635,32 @@ function ns.formatIdle(s)
   return ("%dm"):format(math.max(1, math.floor(s / 60)))
 end
 
+-- Exact progress line for the tooltip ("Level 42 · 125,400 / 210,000 (60%)").
+-- Nil when the snapshot is not a readable level, never a guess.
+function ns.progressLine(snap)
+  if not ns.validateSnapshot(snap) or snap.capped then return nil end
+  if snap.req <= 0 then return nil end
+  local pct = math.floor(snap.xp / snap.req * 100 + 0.5)
+  return ("Level %d · %s / %s (%d%%)"):format(snap.level, ns.commas(snap.xp), ns.commas(snap.req), pct)
+end
+
+-- Right side of the rested tooltip row ("45,000 XP (21%)"). Nil without rested.
+function ns.restedText(restedXp, req)
+  if type(restedXp) ~= "number" or restedXp <= 0 then return nil end
+  if not finite(req) or req <= 0 then return nil end
+  local pct = math.floor(restedXp / req * 100 + 0.5)
+  return "|cFF" .. ns.hex(COLORS.rest) .. ns.commas(restedXp) .. " XP (" .. pct .. "%)|r"
+end
+
+-- Right side of the quest-ready tooltip row. Nil without banked quest XP.
+function ns.questText(bankedXp, count, req)
+  if type(bankedXp) ~= "number" or bankedXp <= 0 then return nil end
+  if type(count) ~= "number" or count <= 0 then return nil end
+  if not finite(req) or req <= 0 then return nil end
+  local pct = math.floor(bankedXp / req * 100 + 0.5)
+  return "|cFF" .. ns.hex(COLORS.quest) .. ns.commas(bankedXp) .. " XP (" .. pct .. "%)|r"
+end
+
 function ns.subText(est)
   local s = est.status
   if s == "paused" then return "Tracking paused" end
@@ -612,12 +673,17 @@ function ns.subText(est)
   if s == "awaiting-level-update" then
     return est.unit == "Rep" and "Rank complete; awaiting update" or "Level complete; awaiting update"
   end
-  if s == "collecting" then return "Collecting data" end
+  -- A rate on less than 3 minutes of data is an early estimate, never a
+  -- forecast: both short-window statuses say so up front.
+  if s == "collecting" then return "Early estimate · collecting data" end
   local span = ns.formatObserved(est.windowSeconds)
   if s == "no-recent-xp" then
     return (est.unit == "Rep" and "No rep in the last " or "No XP in the last ") .. span
   end
   if s == "warming-up" then
+    if (est.observedSeconds or 0) < 180 then
+      return "Early estimate · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
+    end
     return "Warming up · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
   end
   if s == "idle" then
@@ -1000,6 +1066,7 @@ local mode = "xp" -- "xp", "rep", or "dormant"; derived from the capped snapshot
 local function resetTrackers()
   rateTracker = ns.newTracker(clock())
   etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
+  ns.sessionReset(clock()) -- a new session: totals and gain memory restart
   ns.clearSummary() -- observation restarts: the old burst never reports
   pendingAnnounce = nil -- a queued copy belongs to the old session: drop it
   unroutedDing = nil -- a stashed ding belongs to the old session: drop it
@@ -1102,6 +1169,178 @@ function ns.flushSummary(now)
   if line == nil then return false end
   ns.say(line)
   return true
+end
+
+-- Session totals and gain memory ----------------------------------------
+-- Memory-only, like the trackers: monotonic stamps die with the process,
+-- so a reload starts a fresh session and the goal target is the only
+-- persisted piece. The tooltip is the whole session view: one totals
+-- line plus the last five stamped gains.
+ns.HISTORY_MAX = 5
+ns.SESSION_IDLE = 300 -- no gains for 5 minutes: the timer reads paused
+local history = {} -- newest first: { kind, amount, label, at }
+local session = { xp = 0, rep = 0, startedAt = 0, lastGainAt = nil }
+local lastTurnInAt = nil
+
+function ns.noteTurnIn(now)
+  if finite(now) then lastTurnInAt = now end
+end
+
+-- One stamped award joins the visible memory. kind is "xp" or "rep";
+-- label names the source ("Quest", a faction, or nil for plain XP).
+function ns.noteHistory(now, kind, amount, label)
+  if not finite(now) or not finite(amount) or amount <= 0 then return false end
+  if kind ~= "xp" and kind ~= "rep" then return false end
+  table.insert(history, 1, { kind = kind, amount = amount,
+    label = type(label) == "string" and label or nil, at = now })
+  while #history > ns.HISTORY_MAX do history[#history] = nil end
+  return true
+end
+
+function ns.clearHistory()
+  history = {}
+end
+
+-- Render rows, newest first, with relative stamps.
+function ns.historyRows(now)
+  local out = {}
+  for _, h in ipairs(history) do
+    local head = "+" .. ns.commas(h.amount) .. " " .. (h.kind == "rep" and "rep" or "XP")
+    if h.label ~= nil then head = head .. " · " .. h.label end
+    out[#out + 1] = head .. " · " .. ns.ago(now - h.at)
+  end
+  return out
+end
+
+function ns.sessionReset(now)
+  session = { xp = 0, rep = 0, startedAt = finite(now) and now or 0, lastGainAt = nil }
+  ns.clearHistory()
+end
+
+-- Session totals land beside the tracker awards, under the same pause gate.
+function ns.sessionNote(now, kind, amount)
+  if paused then return false end
+  if not finite(now) or not finite(amount) or amount <= 0 then return false end
+  if kind ~= "xp" and kind ~= "rep" then return false end
+  if kind == "xp" then
+    session.xp = session.xp + amount
+  else
+    session.rep = session.rep + amount
+  end
+  session.lastGainAt = now
+  return true
+end
+
+-- Active seconds: wall-to-wall minus the idle tail past 5 minutes with no
+-- gains. A paused session reads Paused at the render site, not here.
+function ns.sessionStats(now)
+  local last = session.lastGainAt
+  local stop = finite(now) and now or session.startedAt
+  local idle = (last ~= nil) and (stop - last) or (stop - session.startedAt)
+  if idle >= ns.SESSION_IDLE then stop = (last or session.startedAt) + ns.SESSION_IDLE end
+  return { xp = session.xp, rep = session.rep,
+    activeSecs = math.max(0, stop - session.startedAt),
+    idleSecs = (idle >= ns.SESSION_IDLE) and idle or nil }
+end
+
+function ns.sessionLine(now, isPaused)
+  local st = ns.sessionStats(now)
+  local head = "Session: +" .. fmt(st.xp) .. " XP"
+  if st.rep > 0 then head = head .. " · +" .. fmt(st.rep) .. " rep" end
+  if isPaused then return head .. " · Paused" end
+  if st.idleSecs ~= nil then
+    return head .. " · " .. ns.formatEtaLong(st.activeSecs) .. " · timer paused (idle)"
+  end
+  return head .. " · " .. ns.formatEtaLong(st.activeSecs)
+end
+
+-- Goal mode --------------------------------------------------------------
+-- A target level (XP) or rank number (rep), persisted until reached or
+-- cleared. Future level sizes are unknown, so XP-to-go more than one
+-- level out is an honest "~" at the current level size, never a promise.
+function ns.goalTarget()
+  local g = opts().goal
+  if type(g) ~= "string" or g == "" then return nil end
+  local n = tonumber(g)
+  if n == nil or n < 1 or n ~= math.floor(n) then return nil end
+  return n
+end
+
+-- Effective hourly rate on the same longer ETA basis the title uses, so
+-- the goal countdown never disagrees with the time-to-level above it.
+local function goalRate(est)
+  if type(est) ~= "table" or est.status == "paused" then return nil end
+  if est.etaSeconds ~= nil and est.remainingXp ~= nil
+      and est.etaSeconds > 0 and est.remainingXp > 0 then
+    return est.remainingXp / est.etaSeconds * 3600
+  end
+  if est.xpPerHour ~= nil and est.xpPerHour > 0 then return est.xpPerHour end
+  return nil
+end
+
+function ns.goalLineXP(snap, est)
+  local target = ns.goalTarget()
+  if target == nil then return nil end
+  if not ns.validateSnapshot(snap) or snap.capped then return nil end
+  if target <= snap.level then return nil end -- reached: the event path clears it
+  local approx = (target - snap.level) * snap.req
+  local head = ("Goal %d: ~%s XP"):format(target, fmt(approx))
+  local tail = {}
+  local rate = goalRate(est)
+  if rate ~= nil then
+    tail[#tail + 1] = "~" .. ns.formatEtaLong(approx / rate * 3600)
+  end
+  local banked, ready = ns.questBank()
+  if ready > 0 and banked > 0 then
+    local avg = banked / ready
+    tail[#tail + 1] = ("~%d turn-ins at current average (%s)"):format(math.ceil(approx / avg), fmt(avg))
+  end
+  if #tail > 0 then head = head .. " · " .. table.concat(tail, " · ") end
+  return head
+end
+
+function ns.goalLineRep(progress, est)
+  local target = ns.goalTarget()
+  if target == nil then return nil end
+  if type(progress) ~= "table" or progress.capped then return nil end
+  if progress.kind == "paragon" then return nil end -- cycles never end: no target
+  if type(progress.level) ~= "number" then return nil end
+  if target <= progress.level then return nil end -- reached: the event path clears it
+  local approx = (target - progress.level) * progress.need
+  local rankName = progress.kind == "renown" and ("Renown " .. target)
+    or (progress.kind == "friendship" and ("rank " .. target) or ns.standingName(target))
+  local head = ("Goal %s: ~%s rep"):format(rankName, fmt(approx))
+  local rate = goalRate(est)
+  if rate ~= nil then
+    head = head .. " · ~" .. ns.formatEtaLong(approx / rate * 3600)
+  end
+  return head
+end
+
+-- Clear a reached goal with one chat fact. Called after the baseline moves.
+function ns.checkGoalReachedXP(snap)
+  local target = ns.goalTarget()
+  if target == nil then return false end
+  if type(snap) ~= "table" or not finite(snap.level) then return false end
+  if snap.capped or snap.level >= target then
+    opts().goal = ""
+    ns.say(("goal reached (level %d)"):format(snap.capped and snap.level or target))
+    return true
+  end
+  return false
+end
+
+function ns.checkGoalReachedRep(progress)
+  local target = ns.goalTarget()
+  if target == nil then return false end
+  if type(progress) ~= "table" then return false end
+  if progress.capped or (progress.kind ~= "paragon"
+      and type(progress.level) == "number" and progress.level >= target) then
+    opts().goal = ""
+    ns.say("goal reached (" .. progress.name .. ")")
+    return true
+  end
+  return false
 end
 
 -- Client flavor. The client loads exactly one of our tocs (the 1.x
@@ -1476,6 +1715,36 @@ function ns.barLabel(snap, seg)
   return ("%d  %s/%s (%d%%)"):format(snap.level, fmt(snap.xp), fmt(snap.req), pct)
 end
 
+-- Bar label dispatch: density picks the shape, alwaysShow only picks
+-- persistence. Minimal is percent, standard is today's label, full adds
+-- exact numbers to the rate line.
+function ns.xpLabel(o, est, snap, seg)
+  local d = ns.density()
+  if seg then
+    local pct = math.floor(seg.pct + 0.5)
+    if d == "minimal" then return ("%d%%"):format(pct) end
+    if d == "full" then
+      return ("%s/%s (%d%%) · %s"):format(fmt(snap.xp), fmt(snap.req), pct, ns.barText(est))
+    end
+  end
+  if o.alwaysShow then return ns.barText(est) end
+  if seg then return ns.barLabel(snap, seg) end
+  return ns.barText(est)
+end
+
+function ns.repLabel(o, est, progress)
+  local d = ns.density()
+  if progress ~= nil and not progress.capped and progress.need > 0 then
+    local pct = math.floor(progress.have / progress.need * 100 + 0.5)
+    if d == "minimal" then return ("%d%%"):format(pct) end
+    if d == "full" then
+      return ("%s/%s (%d%%) · %s"):format(fmt(progress.have), fmt(progress.need), pct, ns.barText(est))
+    end
+  end
+  if o.alwaysShow then return ns.barText(est) end
+  return ns.repBarLabel(progress)
+end
+
 -- Ready-to-turn-in quest XP --------------------------------------------
 -- The payout waiting at quest givers, as raw XP and a quest count.
 -- GetQuestLogRewardXP reads the selected entry, so the scan saves and
@@ -1520,6 +1789,12 @@ function ns.scanQuestXp()
   end)
   scanning = false
   if ok then questXp, questCount = total, count else questXp, questCount = 0, 0 end
+  return questXp, questCount
+end
+
+-- Banked ready-to-turn-in XP and quest count for the goal estimate.
+-- Declared here, beside the scan that owns the numbers.
+function ns.questBank()
   return questXp, questCount
 end
 
@@ -1871,14 +2146,18 @@ function ns.resolveRepFaction()
   repWatching = false
   local watched = watchedFaction()
   local watchedID = watched ~= nil and watched.factionID or nil
+  -- An explicit pin wins over every automatic source; it revalidates on
+  -- the way in, so a dead row never sticks.
+  local pin = opts().repPin
+  if type(pin) ~= "number" or pin == 0 then pin = nil end
   local order
   if opts().followLatest then
-    order = { lastGainedID, opts().repFaction, watchedID }
+    order = { pin, lastGainedID, opts().repFaction, watchedID }
   else
-    order = { watchedID, lastGainedID, opts().repFaction }
+    order = { pin, watchedID, lastGainedID, opts().repFaction }
   end
   repFactionID = nil
-  for i = 1, 3 do -- fixed bound: the order has holes (ipairs would stop at the first nil)
+  for i = 1, 4 do -- fixed bound: the order has holes (ipairs would stop at the first nil)
     local id = order[i]
     if type(id) == "number" and ns.readRepProgress(id) then
       repFactionID = id
@@ -1888,6 +2167,38 @@ function ns.resolveRepFaction()
   end
   opts().repFaction = repFactionID
   return repFactionID
+end
+
+function ns.repPinned()
+  local pin = opts().repPin
+  if type(pin) == "number" and pin ~= 0 then return pin end
+  return nil
+end
+
+-- Faction ID by exact (case-insensitive) name, for "/vxp rep track".
+-- Nil when the list API is absent or nothing readable matches.
+function ns.findFactionByName(want)
+  if type(want) ~= "string" or want == "" then return nil end
+  if type(C_Reputation) ~= "table" then return nil end
+  local R = C_Reputation
+  if type(R.GetNumFactions) ~= "function" or type(R.GetFactionDataByIndex) ~= "function" then
+    return nil
+  end
+  local needle = want:lower()
+  local ok, found = pcall(function()
+    local n = R.GetNumFactions()
+    if type(n) ~= "number" then return nil end
+    for i = 1, n do
+      local fd = R.GetFactionDataByIndex(i)
+      if ns.validRepRow(fd) and type(fd.name) == "string"
+          and fd.name:lower() == needle then
+        return fd.factionID
+      end
+    end
+    return nil
+  end)
+  if ok then return found end
+  return nil
 end
 
 function ns.repTracked()
@@ -2015,12 +2326,9 @@ local function refreshRep(o)
       bar:SetMinMaxValues(0, progress.need)
       bar:SetValue(progress.have)
     end
-    if o.alwaysShow then
-      barText:SetText(ns.barText(repEstimate(progress)))
-      barText:Show()
-    else
-      barText:SetText(ns.repBarLabel(progress))
-    end
+    local repEst = repEstimate(progress)
+    barText:SetText(ns.repLabel(o, repEst, progress))
+    if o.alwaysShow then barText:Show() end
     applyBarArt(ns.repAtlas(progress))
   else
     if type(bar.SetAnimatedValues) == "function" then
@@ -2029,12 +2337,8 @@ local function refreshRep(o)
       bar:SetMinMaxValues(0, 1)
       bar:SetValue(0)
     end
-    if o.alwaysShow then
-      barText:SetText(ns.barText(repEstimate(nil)))
-      barText:Show()
-    else
-      barText:SetText(ns.repBarLabel(nil))
-    end
+    barText:SetText(ns.repLabel(o, repEstimate(nil), nil))
+    if o.alwaysShow then barText:Show() end
     applyBarArt(ns.XP_ATLAS, ns.FLARE_XP_ATLAS, ns.LEVELUP_XP_ATLAS)
   end
   -- No overlays in rep mode: rested and quest XP don't exist here.
@@ -2080,12 +2384,8 @@ local function refresh()
       bar:SetMinMaxValues(0, baseline.req)
       bar:SetValue(baseline.xp)
     end
-    if o.alwaysShow then
-      barText:SetText(ns.barText(est))
-      barText:Show()
-    else
-      barText:SetText(ns.barLabel(baseline, seg))
-    end
+    barText:SetText(ns.xpLabel(o, est, baseline, seg))
+    if o.alwaysShow then barText:Show() end
     local isRested = seg ~= nil and seg.hasRested
     applyBarArt(isRested and ns.RESTED_ATLAS or ns.XP_ATLAS,
       isRested and ns.FLARE_RESTED_ATLAS or ns.FLARE_XP_ATLAS,
@@ -2176,6 +2476,15 @@ function ns.showRepTip()
         COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
     end
   end
+  local repGoal = ns.goalLineRep(progress, est)
+  if repGoal then
+    GameTooltip:AddLine(repGoal, COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  end
+  GameTooltip:AddLine(ns.sessionLine(clock(), paused),
+    COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  for _, h in ipairs(ns.historyRows(clock())) do
+    GameTooltip:AddLine(h, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
   GameTooltip:AddLine(" ", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine("Bonuses", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   local bonuses = bonusParts()
@@ -2189,7 +2498,12 @@ function ns.showRepTip()
   for _, m in ipairs(missingParts()) do
     GameTooltip:AddLine(m, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   end
-  if progress then
+  local pin = ns.repPinned()
+  if pin ~= nil then
+    local pname = (progress ~= nil and progress.name) or ("faction " .. pin)
+    GameTooltip:AddLine("Pinned to " .. pname,
+      COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  elseif progress then
     GameTooltip:AddLine(repWatching and "Following watched faction" or "Following latest gains",
       COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   end
@@ -2207,27 +2521,47 @@ function ns.showTip()
   if est.etaSeconds and (est.remainingXp or 0) > 0 then
     est.etaSeconds = longEta or est.etaSeconds
   end
-  local seg = ns.barSegments(baseline, restedAmount(), questXp)
+  local rested = restedAmount()
+  local seg = ns.barSegments(baseline, rested, questXp)
   GameTooltip:SetOwner(frame, "ANCHOR_TOP")
   GameTooltip:ClearLines()
   GameTooltip:SetText(ns.titleText(est), COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
   GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  local progress = ns.progressLine(baseline)
+  if progress then
+    GameTooltip:AddLine(progress, COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  end
+  local goal = ns.goalLineXP(baseline, est)
+  if goal then
+    GameTooltip:AddLine(goal, COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  end
   if seg then
-    if seg.hasRested and seg.restedPct >= 0.5 then
-      local pct = math.floor(seg.restedPct + 0.5)
-      local num = "|cFF" .. ns.hex(COLORS.rest) .. pct .. "%|r"
-      GameTooltip:AddDoubleLine("Rested:", num .. " of level",
+    local restedRight = ns.restedText(rested, baseline.req)
+    if seg.hasRested and seg.restedPct >= 0.5 and restedRight then
+      GameTooltip:AddDoubleLine("Rested:", restedRight .. " of level",
         COLORS.text[1], COLORS.text[2], COLORS.text[3],
         COLORS.text[1], COLORS.text[2], COLORS.text[3])
+      -- The rules that change behavior, in the player's terms.
+      GameTooltip:AddLine("Kills earn double · 1 rested per 1 base XP",
+        COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+      GameTooltip:AddLine("Quests are not doubled and cost no rested",
+        COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+      GameTooltip:AddLine("Cap: " .. ns.commas(1.5 * baseline.req) .. " XP (150% of a level)",
+        COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
     end
-    if questCount > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 then
-      local pct = math.floor(seg.questPct + 0.5)
+    -- No rested, no rested lines: an empty pool is normal rate, not a gap.
+    local questRight = ns.questText(questXp, questCount, baseline.req)
+    if questCount > 0 and seg.questEnd > seg.progress and seg.questPct >= 0.5 and questRight then
       local noun = questCount == 1 and "quest" or "quests"
-      local num = "|cFF" .. ns.hex(COLORS.quest) .. pct .. "%|r"
-      GameTooltip:AddDoubleLine(("%d %s ready:"):format(questCount, noun), num .. " of level",
+      GameTooltip:AddDoubleLine(("%d %s ready:"):format(questCount, noun), questRight .. " of level",
         COLORS.text[1], COLORS.text[2], COLORS.text[3],
         COLORS.text[1], COLORS.text[2], COLORS.text[3])
     end
+  end
+  GameTooltip:AddLine(ns.sessionLine(clock(), paused),
+    COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  for _, h in ipairs(ns.historyRows(clock())) do
+    GameTooltip:AddLine(h, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
   end
   -- Air between the readout and the bonus section, the way native
   -- tooltips group: title block, stats block, gold header, lines.
@@ -2489,12 +2823,15 @@ local function onRep(gainedID, updatedStanding, renownLevel)
           local stamp = clock()
           ns.addAward(rateTracker, stamp, award)
           ns.addAward(etaTracker, stamp, award)
+          ns.sessionNote(stamp, "rep", award)
+          ns.noteHistory(stamp, "rep", award, snap.name)
           ns.noteSummaryGain(stamp, "rep", repFactionID, snap.name, award)
         end
       end
       local rankMsg = ns.repRankMessage(repBaseline, snap)
       if rankMsg then ns.say(rankMsg) end -- dings alone route: ranks stay local
       repBaseline = snap
+      ns.checkGoalReachedRep(snap)
     end
   end
   refresh()
@@ -2557,6 +2894,7 @@ local function onXP()
   if snap.capped then
     maybeAnnounceDing(baseline, snap)
     baseline = snap
+    ns.checkGoalReachedXP(snap)
     activateMode(snap)
     return
   end
@@ -2566,11 +2904,15 @@ local function onXP()
       local stamp = clock()
       ns.addAward(rateTracker, stamp, gained)
       ns.addAward(etaTracker, stamp, gained)
+      ns.sessionNote(stamp, "xp", gained)
+      local quest = lastTurnInAt ~= nil and (stamp - lastTurnInAt) < 5
+      ns.noteHistory(stamp, "xp", gained, quest and "Quest" or nil)
       ns.noteSummaryGain(stamp, "xp", nil, nil, gained)
     end
   end
   maybeAnnounceDing(baseline, snap)
   baseline = snap
+  ns.checkGoalReachedXP(snap)
   refresh()
 end
 
@@ -2587,6 +2929,7 @@ local function onLevelUp()
   maybeAnnounceDing(baseline, snap)
   routeDing() -- the sole routing moment: the XP update only stashes
   baseline = snap
+  ns.checkGoalReachedXP(snap)
   if snap.capped then activateMode(snap) end
 end
 
@@ -2664,6 +3007,26 @@ function ns.ensureSettings()
     ns.onSettingChanged(s, function()
       refresh()
       click(opts().announce ~= "off")
+    end)
+  end
+  -- Bar text density: a dropdown, like announce routing above.
+  if type(Settings.CreateDropdown) == "function"
+      and type(Settings.CreateControlTextContainer) == "function" then
+    local function densityOptions()
+      local container = Settings.CreateControlTextContainer()
+      container:Add("minimal", "Minimal")
+      container:Add("standard", "Standard")
+      container:Add("full", "Full")
+      return container:GetData()
+    end
+    local ds = Settings.RegisterAddOnSetting(
+      category, "VocXP_density", "density", db, type(defaults.density),
+      "Bar text density" .. ns.newSuffix("density"), defaults.density)
+    Settings.CreateDropdown(category, ds, densityOptions,
+      "Minimal shows percent only, Standard shows XP/hr and time to level, Full adds exact numbers.")
+    ns.onSettingChanged(ds, function()
+      refresh()
+      click(true)
     end)
   end
   check("locked", "Lock the position",
@@ -2770,7 +3133,10 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
       ns.flushAnnounce() -- combat's end releases one queued copy, if any
     elseif event == "ADDON_ACTION_BLOCKED" then
       ns.onActionBlocked(arg1, arg2) -- our own taint blocks, for diag
-    elseif event == "QUEST_LOG_UPDATE" or event == "QUEST_TURNED_IN"
+    elseif event == "QUEST_TURNED_IN" then
+      ns.noteTurnIn(clock()) -- a gain landing now is a quest turn-in
+      ns.scanQuestXp()
+    elseif event == "QUEST_LOG_UPDATE"
         or event == "QUEST_ACCEPTED" or event == "QUEST_REMOVED"
         or event == "QUEST_COMPLETE" then
       ns.scanQuestXp()
@@ -2932,6 +3298,10 @@ ns.HELP = {
   "/vxp pause     pause or resume tracking",
   "/vxp reset     restart the session",
   "/vxp rep       reputation tracking on or off",
+  "/vxp rep track pin a faction by name or ID",
+  "/vxp rep auto  follow watched or latest gains again",
+  "/vxp density   bar text: minimal, standard, or full",
+  "/vxp goal 50   set a target level or rank (clear drops it)",
   "/vxp announce  ding lines to party, guild, or off",
   "/vxp diag      dump snapshot and capture state for a bug report",
   "/vxp dismiss   clear new-feature tags",
@@ -2991,6 +3361,53 @@ SlashCmdList.VOCXP = function(msg)
     refresh()
     click(o.repMode)
     ns.say(o.repMode and "reputation tracking on" or "reputation tracking off")
+  elseif msg == "rep auto" then
+    opts().repPin = 0
+    if mode == "rep" then ns.maybeSwitchRep() end
+    refresh()
+    click(true)
+    ns.say("following watched or latest gains")
+  elseif msg:sub(1, 10) == "rep track " then
+    local arg = strtrim(msg:sub(11))
+    local id = tonumber(arg) or ns.findFactionByName(arg)
+    if type(id) == "number" and ns.readRepProgress(id) then
+      opts().repPin = id
+      if mode == "rep" then ns.maybeSwitchRep() end
+      refresh()
+      click(true)
+      local pinned = ns.readRepProgress(id)
+      ns.say("pinned to " .. (pinned and pinned.name or ("faction " .. id)))
+    else
+      ns.say("no readable faction matches " .. arg)
+    end
+  elseif msg == "density" then
+    ns.say("bar text " .. ns.density() .. " (minimal, standard, or full)")
+  elseif msg:sub(1, 8) == "density " then
+    local d = strtrim(msg:sub(9))
+    if ns.DENSITIES[d] then
+      opts().density = d
+      refresh()
+      click(true)
+      ns.say("bar text " .. d)
+    else
+      ns.say("bar text " .. ns.density() .. " (minimal, standard, or full)")
+    end
+  elseif msg == "goal" then
+    local target = ns.goalTarget()
+    ns.say(target and ("goal " .. opts().goal) or "no goal (try /vxp goal 50 or /vxp goal clear)")
+  elseif msg == "goal clear" then
+    opts().goal = ""
+    click(false)
+    ns.say("goal cleared")
+  elseif msg:sub(1, 5) == "goal " then
+    local n = tonumber(strtrim(msg:sub(6)))
+    if n ~= nil and n >= 1 and n == math.floor(n) then
+      opts().goal = tostring(n)
+      click(true)
+      ns.say("goal " .. tostring(n))
+    else
+      ns.say("goal takes a level or rank number, or clear")
+    end
   elseif msg == "announce" then
     ns.say("ding announcements to " .. ns.announceChannel() .. " (off, party, or guild)")
   elseif msg == "announce off" or msg == "announce party" or msg == "announce guild" then

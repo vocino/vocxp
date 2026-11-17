@@ -38,13 +38,16 @@ it: a pace reading, never a promise. Below it, how the headline
 was earned: `Last 10m` when steady;
 `Warming up · last 3m of 10m` while the window fills;
 `Idle 2m · last 10m` once a minute has passed with no gains;
-`Collecting data` for the first thirty seconds, while the
+`Early estimate · collecting data` for the first thirty seconds, while the
 headline shows pace alone; `No XP in the last 10m` when the
 window is empty, with the headline reading `0 XP/hr`.
 Warming up owns the second line until the window fills, so
-idle only ever appears beside a full window. Then rested and
-quest reach (`Rested: 30% of level`, `2 quests ready: 5% of
-level`), one line per active bonus, and a gray line naming the
+idle only ever appears beside a full window. Then exact numbers
+(`Level 10 · 500 / 1,000 (50%)`), rested and quest reach with
+exact XP (`Rested: 300 XP (30%) of level`, `2 quests ready:
+300 XP (30%) of level`) plus the rested rules that change
+behavior, a session totals line with the last five stamped
+gains, one line per active bonus, and a gray line naming the
 bonus you are missing and how to get it:
 
 ```
@@ -71,7 +74,10 @@ also sends a copy of the ding line to party or guild chat (instance
 groups use instance chat, and the copy waits for combat's end); off
 keeps it local. Ranks and summaries always stay local. "Always show bar text"
 keeps the rate on the bar at all times (`13k XP/hr - 1h 10m`)
-instead of on hover only.
+instead of on hover only. "Bar text density" picks the shape:
+minimal is percent only, full adds exact numbers to the rate
+line. `/vxp goal 50` names the next payoff in the tooltip
+(`Goal 50: ~40k XP`), persisting until reached or cleared.
 
 ```
 /vxp           show or hide the bar
@@ -79,6 +85,10 @@ instead of on hover only.
 /vxp pause     pause or resume tracking
 /vxp reset     restart the session
 /vxp rep       reputation tracking on or off
+/vxp rep track pin a faction by name or ID
+/vxp rep auto  follow watched or latest gains again
+/vxp density   bar text: minimal, standard, or full
+/vxp goal 50   set a target level or rank (clear drops it)
 /vxp announce  ding lines to party, guild, or off
 /vxp diag      dump snapshot and capture state for a bug report
 /vxp dismiss   clear new-feature tags
@@ -116,9 +126,10 @@ Wickerman pairs, Spirit of Sharing, and the live bonus flag). Turn it off
 with "Track reputation at max level" to restore the old dormancy:
 hidden bar, native bar back, nothing running. "Follow latest
 reputation gains" flips the priority: the bar always follows your
-latest earners instead of the watched faction. The tracked
-faction survives reloads; with nothing watched and no gains yet,
-the bar says so instead of guessing.
+latest earners instead of the watched faction. `/vxp rep track`
+pins one faction by name or ID (surviving reloads like the
+automatic choice); `/vxp rep auto` releases it. With nothing
+watched and no gains yet, the bar says so instead of guessing.
 
 ## Config
 
@@ -132,6 +143,7 @@ Settings > AddOns > VocXP, or `/vxp config`:
 - Announce dings to (default off; party or guild also gets the ding line)
 - Lock the position (default off)
 - Always show bar text (default off)
+- Bar text density (default standard; minimal is percent only, full adds exact numbers)
 
 All are the same switches the slash line flips, and every change
 applies at once.
