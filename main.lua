@@ -86,6 +86,14 @@ end
 -- summary does. Latest wins; dings are rare and the local line at the
 -- call site already kept every fact.
 local pendingAnnounce = nil
+-- A ding printed locally but not yet routed: the XP update prints and
+-- stashes, PLAYER_LEVEL_UP routes. Latest wins; dings are rare.
+local unroutedDing = nil
+-- When the watched level started (clock stamp), and whether this
+-- session saw it begin. A fresh login mid-level never saw the start,
+-- so the next ding prints bare instead of a short count.
+local levelStartAt = nil
+local sawLevelStart = false
 
 -- Send one routed copy now. Returns "sent" (the pcall held -- note a
 -- taint block is an engine event, not a Lua error, so this never
@@ -994,6 +1002,9 @@ local function resetTrackers()
   etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
   ns.clearSummary() -- observation restarts: the old burst never reports
   pendingAnnounce = nil -- a queued copy belongs to the old session: drop it
+  unroutedDing = nil -- a stashed ding belongs to the old session: drop it
+  levelStartAt = clock() -- the watched level starts now, ...
+  sawLevelStart = false -- ... but unseen: the next ding prints bare
 end
 
 -- Net gain summary (Plumber's LootUI pattern, original code: a 0.15s
@@ -1004,9 +1015,13 @@ end
 ns.SUMMARY_QUIET = 0.15 -- stillness before a burst reports, seconds
 local summaryAcc = { count = 0, xp = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
 
--- Busy window: combat lockdown. A missing API never reads as busy.
+-- Busy window: combat lockdown, or the player's combat flag while the
+-- lockdown transitions. The flag can already read true at event time
+-- while the lockdown still reads false, and that gap is where a send
+-- dies to a taint block. A missing API never reads as busy.
 function ns.inCombat()
   if type(InCombatLockdown) == "function" and InCombatLockdown() then return true end
+  if type(UnitAffectingCombat) == "function" and UnitAffectingCombat("player") then return true end
   return false
 end
 
@@ -2485,22 +2500,52 @@ local function onRep(gainedID, updatedStanding, renownLevel)
   refresh()
 end
 
--- The ding: one chat fact when the fresh snapshot sits above the
--- baseline level, whichever event sees it first. The turn-in reads
--- "Experience gained" before "Congratulations" because
--- PLAYER_XP_UPDATE can already carry the new level when
--- PLAYER_LEVEL_UP fires; whoever runs first announces, and the
--- second sees equal levels and stays silent, so either order reports
--- exactly once. Announced outside pause: the line is a fact about
--- the character, not tracked data.
+-- The ding, in two halves. The local line prints from whichever
+-- event sees the new level first: the turn-in reads "Experience
+-- gained" before "Congratulations" because PLAYER_XP_UPDATE can
+-- already carry the new level when PLAYER_LEVEL_UP fires, so the
+-- first event prints and stashes while the second sees equal levels
+-- and stays silent -- either order reports exactly once. The routed
+-- copy waits for PLAYER_LEVEL_UP and routes there only. The XP
+-- update fires at the killing blow, mid-combat-log, where a send
+-- dies to a taint block even outside lockdown; LEVEL_UP is the
+-- dedicated, cooler moment -- the same shape Zygor's party/guild
+-- announce uses (PLAYER_LEVEL_UP straight to the send call). Stashed
+-- outside pause: the line is a fact about the character, not tracked
+-- data.
+-- The ding line: "Ding 25 (3h 12m)". The parenthetical is the time
+-- the finished level took, shown only when this session saw that
+-- level begin. Shares the bar's long-ETA shape.
+function ns.dingLine(level)
+  if sawLevelStart and type(levelStartAt) == "number" and levelStartAt > 0 then
+    local spent = clock() - levelStartAt
+    if finite(spent) and spent >= 0 then
+      return ("Ding %d (%s)"):format(level, ns.formatEtaLong(spent))
+    end
+  end
+  return ("Ding %d"):format(level)
+end
+
 local function maybeAnnounceDing(old, snap)
   if old ~= nil
       and type(old.level) == "number" and type(snap.level) == "number"
       and snap.level > old.level then
-    local line = ("level %d reached"):format(snap.level)
+    local line = ns.dingLine(snap.level)
     ns.say(line)
-    ns.announce(line)
+    unroutedDing = line
+    levelStartAt = clock() -- the new level starts with its ding
+    sawLevelStart = true
   end
+end
+
+-- Route the stashed ding, if any. Called on PLAYER_LEVEL_UP only, so
+-- the XP update never sends. A missing copy is never an error: the
+-- local line above already kept the fact.
+local function routeDing()
+  if unroutedDing == nil then return end
+  local line = unroutedDing
+  unroutedDing = nil
+  ns.announce(line)
 end
 
 -- The XP bar is the single authoritative award source: each update
@@ -2529,16 +2574,18 @@ local function onXP()
   refresh()
 end
 
--- The ding's second chance: usually onXP already announced it above
--- and this only resyncs with no award -- the XP path stays the single
--- authoritative award source, so event order cannot double-count it.
--- When LEVEL_UP runs first it reports here instead. A repeat event at
--- the same level only resyncs; a ding to cap pivots modes below. The
+-- The ding's routing moment: onXP above already printed a
+-- first-seen ding and stashed it, so this usually only routes the
+-- stash with no award -- the XP path stays the single authoritative
+-- award source, so event order cannot double-count it. When LEVEL_UP
+-- runs first it prints and routes here instead. A repeat event at the
+-- same level only resyncs; a ding to cap pivots modes below. The
 -- fanfare itself stays the client's own: no SOUNDKIT name for it
 -- exists in Blizzard's UI source, so the addon adds no sound of its own.
 local function onLevelUp()
   local snap = readSnapshot()
   maybeAnnounceDing(baseline, snap)
+  routeDing() -- the sole routing moment: the XP update only stashes
   baseline = snap
   if snap.capped then activateMode(snap) end
 end

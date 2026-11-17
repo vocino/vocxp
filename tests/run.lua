@@ -96,6 +96,7 @@ local function loadAddon(world)
 
   g.IsInInstance = function() return world.inInstance end
   g.InCombatLockdown = function() return world.inCombat end
+  g.UnitAffectingCombat = function(unit) return unit == "player" and world.playerCombat == true end
   g.IsInGuild = function() return world.inGuild == true end
   g.LE_PARTY_CATEGORY_HOME = 1
   g.LE_PARTY_CATEGORY_INSTANCE = 2
@@ -3355,7 +3356,7 @@ do -- PLAYER_LEVEL_UP announces the ding once, then resyncs silently
   local before = #w.printed
   w.level, w.xp, w.max = 11, 50, 2000
   levelEvent(w)
-  check("ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 11 reached")
+  check("ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 11")
   check("ding says one line", #w.printed == before + 1)
   levelEvent(w) -- repeat at the same level: silent resync
   check("ding repeats silent", #w.printed == before + 1)
@@ -3375,9 +3376,9 @@ do -- live order: the XP update already reads the new level before LEVEL_UP
   xpEvent(w) -- PLAYER_XP_UPDATE first, carrying the new level
   levelEvent(w) -- PLAYER_LEVEL_UP after: no second line, no lost ding
   check("xp-first ding says one local line", #w.printed == before + 1
-    and w.printed[#w.printed] == "|cff66ccffVocXP|r: level 29 reached")
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 29")
   check("xp-first ding copies once", #w.chatSends == 1
-    and w.chatSends[1].text == "level 29 reached"
+    and w.chatSends[1].text == "Ding 29"
     and w.chatSends[1].chatType == "GUILD")
 end
 do -- a multi-level ding celebrates the new level and resyncs
@@ -3387,7 +3388,7 @@ do -- a multi-level ding celebrates the new level and resyncs
   local before = #w.printed
   w.level, w.xp, w.max = 12, 50, 3000
   levelEvent(w)
-  check("jump ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 12 reached")
+  check("jump ding announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 12")
   check("jump ding says one line", #w.printed == before + 1)
 end
 do -- announce routing: off sends nothing extra, party/guild copy the line
@@ -3413,10 +3414,10 @@ do -- the level 25 ding to party: local line plus a plain-text copy
   local before = #w.printed
   w.level, w.xp, w.max = 25, 100, 6000
   levelEvent(w)
-  check("party ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("party ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
   check("party ding says one local line", #w.printed == before + 1)
   check("party ding copies once", #w.chatSends == 1
-    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].text == "Ding 25"
     and w.chatSends[1].chatType == "PARTY")
 end
 do -- party selected but solo: the local line keeps the fact, nothing sent
@@ -3429,7 +3430,7 @@ do -- party selected but solo: the local line keeps the fact, nothing sent
   local before = #w.printed
   w.level, w.xp, w.max = 25, 100, 6000
   levelEvent(w)
-  check("party solo keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("party solo keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
   check("party solo says one local line", #w.printed == before + 1)
   check("party solo sends nothing", #w.chatSends == 0)
 end
@@ -3475,6 +3476,85 @@ do -- combat defers the copy; combat's end releases it
     and w.chatSends[1].chatType == "PARTY")
   check("regen flush idles", ns.flushAnnounce() == false)
 end
+do -- the routed copy waits for LEVEL_UP: XP_UPDATE prints but never sends
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  w.chatSends = {}
+  w.inGroup = true
+  w.savedVars = { announce = "party" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  xpEvent(w) -- PLAYER_XP_UPDATE first, carrying the new level
+  check("xp ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
+  check("xp ding says one local line", #w.printed == before + 1)
+  check("xp ding sends nothing", #w.chatSends == 0)
+  levelEvent(w) -- PLAYER_LEVEL_UP routes the stashed ding
+  check("level routes the stashed ding", #w.chatSends == 1
+    and w.chatSends[1].text == "Ding 25"
+    and w.chatSends[1].chatType == "PARTY")
+  check("level adds no second line", #w.printed == before + 1)
+end
+do -- LEVEL_UP first: one local line and one routed copy, XP_UPDATE silent after
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  w.chatSends = {}
+  w.inGroup = true
+  w.savedVars = { announce = "party" }
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("level-first ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
+  check("level-first ding copies once", #w.chatSends == 1
+    and w.chatSends[1].text == "Ding 25"
+    and w.chatSends[1].chatType == "PARTY")
+  xpEvent(w)
+  check("xp after ding says nothing more", #w.printed == before + 1)
+  check("xp after ding sends nothing more", #w.chatSends == 1)
+end
+do -- the ding line prints bare before a level start is seen
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("ding line bare at load", ns.dingLine(25) == "Ding 25")
+end
+do -- a ding after a fully observed level names its duration
+  local w = newWorld()
+  w.level, w.xp, w.max = 24, 4500, 5000
+  loadAddon(w)
+  clientLoaded(w)
+  local before = #w.printed
+  w.level, w.xp, w.max = 25, 100, 6000
+  levelEvent(w)
+  check("first ding prints bare", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
+  w.now = w.now + (3 * 3600 + 12 * 60)
+  w.level, w.xp, w.max = 26, 100, 7000
+  levelEvent(w)
+  check("second ding names its duration", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 26 (3h 12m)")
+  check("two dings say two lines", #w.printed == before + 2)
+end
+do -- the player's combat flag defers like lockdown does
+  local w = newWorld()
+  w.chatSends = {}
+  w.inGroup = true
+  w.inCombat = false
+  w.playerCombat = true
+  w.savedVars = { announce = "party" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("player combat defers", ns.announce("level 25 reached") == "deferred")
+  check("player combat sends nothing yet", #w.chatSends == 0)
+  check("player combat flush holds", ns.flushAnnounce() == false and #w.chatSends == 0)
+  w.playerCombat = false
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_REGEN_ENABLED")
+  check("regen after combat releases the copy", #w.chatSends == 1
+    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].chatType == "PARTY")
+  check("regen after combat idles", ns.flushAnnounce() == false)
+end
 do -- the block watch records only our own taint blocks, for diag
   local w = newWorld()
   local ns = loadAddon(w)
@@ -3518,10 +3598,10 @@ do -- the level 25 ding to guild: local line plus a plain-text copy
   local before = #w.printed
   w.level, w.xp, w.max = 25, 100, 6000
   levelEvent(w)
-  check("guild ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("guild ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
   check("guild ding says one local line", #w.printed == before + 1)
   check("guild ding copies once", #w.chatSends == 1
-    and w.chatSends[1].text == "level 25 reached"
+    and w.chatSends[1].text == "Ding 25"
     and w.chatSends[1].chatType == "GUILD")
 end
 do -- guild selected but guildless: the local line keeps the fact, nothing sent
@@ -3533,7 +3613,7 @@ do -- guild selected but guildless: the local line keeps the fact, nothing sent
   local before = #w.printed
   w.level, w.xp, w.max = 25, 100, 6000
   levelEvent(w)
-  check("guildless ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: level 25 reached")
+  check("guildless ding keeps the local line", w.printed[#w.printed] == "|cff66ccffVocXP|r: Ding 25")
   check("guildless ding says one local line", #w.printed == before + 1)
   check("guildless ding sends nothing", #w.chatSends == 0)
 end
@@ -3609,7 +3689,7 @@ do -- ding to cap announces the level, then pivots to rep
   capWorld(w)
   levelEvent(w)
   check("cap ding announces level", w.printed[#w.printed - 1] ==
-    "|cff66ccffVocXP|r: level 90 reached")
+    "|cff66ccffVocXP|r: Ding 90")
   check("cap ding pivots to rep", w.printed[#w.printed] ==
     "|cff66ccffVocXP|r: tracking reputation at max level (/vxp config to turn it off)")
   check("cap ding swaps to rep", w.frame.events.UPDATE_FACTION == true

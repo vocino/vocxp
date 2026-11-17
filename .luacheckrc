@@ -35,6 +35,7 @@ read_globals = {
   "canaccessvalue", -- secret-aware aura time reads, presence-gated
   "NUM_BAG_SLOTS", -- bag 0 plus worn bags for the food hint, presence-gated
   "InCombatLockdown", "IsInInstance", "IsXPUserDisabled",
+  "UnitAffectingCombat", -- player combat flag beside lockdown (Blizzard's own bare use, live + forever)
   "IsInGuild", -- guild presence gate for routed copies (live + forever)
   "IsInGroup", -- group presence gate for routed copies (Blizzard's own argless use)
   "LE_PARTY_CATEGORY_HOME", "LE_PARTY_CATEGORY_INSTANCE", -- group categories, C-defined like NUM_BAG_SLOTS
