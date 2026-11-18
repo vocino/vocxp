@@ -63,9 +63,22 @@ local function loadAddon(world)
   native.Show = function(self) self.shown = true end
   g.StatusTrackingBarManager = native
   world.native = native
+  -- Midnight secrecy: combat, encounter, challenge-mode, and PvP
+  -- restrictions make auras secret (SecretWhenUnitAuraRestricted), and
+  -- guarded reads demand non-secret auras (RequiresNonSecretAura), so
+  -- both lookups return nothing while either combat flag reads true.
+  local function auraBlind()
+    return world.inCombat == true or world.playerCombat == true
+  end
   g.C_UnitAuras = {
-    GetPlayerAuraBySpellID = function(id) return world.auras[id] end,
-    GetAuraDataBySpellName = function(_, spellName) return world.aurasByName[spellName] end,
+    GetPlayerAuraBySpellID = function(id)
+      if auraBlind() then return nil end
+      return world.auras[id]
+    end,
+    GetAuraDataBySpellName = function(_, spellName)
+      if auraBlind() then return nil end
+      return world.aurasByName[spellName]
+    end,
   }
   g.C_Item = {
     GetItemInfoInstant = function(link)
@@ -2065,6 +2078,60 @@ do
   hover(w)
   check("instance bare body", tiphas(w, "No XP bonus"))
   check("instance bare missing", missinglines(w) == "Aura scan unavailable in instances")
+end
+
+-- 22b. Combat blinds aura reads the same way (SecretWhenUnitAuraRestricted
+-- plus RequiresNonSecretAura): the tooltip holds the pre-combat bonuses
+-- instead of claiming none.
+do -- hovered before the fight: the fight keeps the line, honestly dated
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = { expirationTime = w.now + 660 }
+  auraTick(w)
+  check("pre-combat fed", greenlines(w) == "Well Fed · kill XP (10m left)")
+  w.inCombat = true
+  hover(w)
+  check("combat holds fed", greenlines(w) == "Well Fed · kill XP (10m left)")
+  check("combat holds honestly", tiphas(w, "Bonuses as of combat start"))
+  check("combat hides no-bonus", not tiphas(w, "No XP bonus"))
+  w.inCombat = false
+  hover(w)
+  check("regen restores live", greenlines(w) == "Well Fed · kill XP (10m left)")
+end
+do -- eaten with no hover before the fight: UNIT_AURA snapshots it
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.aurasByName["Well Fed"] = {}
+  w.frame.scripts.OnEvent(w.frame, "UNIT_AURA", "player")
+  w.inCombat = true
+  hover(w)
+  check("combat aura-event holds", greenlines(w) == "Well Fed · kill XP")
+end
+do -- nothing held: combat says unavailable, never a false gap
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.inCombat = true
+  hover(w)
+  check("combat bare body", tiphas(w, "No XP bonus"))
+  check("combat bare note", tiphas(w, "Aura scan unavailable in combat"))
+  check("combat bare no gaps", missinglines(w) == "Aura scan unavailable in combat")
+end
+do -- rep buffs hold through combat too
+  local w = newWorld()
+  capWorld(w)
+  w.auras[46668] = {}
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  loadAddon(w)
+  clientLoaded(w)
+  hover(w)
+  check("rep pre-combat buff", greenlines(w) == "+10% WHEE!")
+  w.inCombat = true
+  hover(w)
+  check("rep combat holds", greenlines(w) == "+10% WHEE!")
 end
 
 -- 23. Idle status: a quiet minute in a full window admits staleness.

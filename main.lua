@@ -1597,7 +1597,7 @@ end
 -- when the client reports one. The bar already shows rested reach,
 -- so Rested has no line here; effects the client cannot confirm
 -- have no entry at all.
-local function bonusParts()
+local function bonusLive()
   local parts = {}
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
@@ -1639,7 +1639,7 @@ end
 -- here either; the bar already answers that. In instances the aura
 -- scan goes blind, so the scan line replaces the list instead of
 -- guessing absence.
-local function missingParts()
+local function missingLive()
   local parts = {}
   local function add(pct, label)
     parts[#parts + 1] = { pct = pct, label = label, seq = #parts + 1 }
@@ -1675,6 +1675,57 @@ local function missingParts()
   local labels = {}
   for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
   return labels
+end
+
+-- Combat hold: combat, encounter, challenge-mode, and PvP restrictions
+-- turn aura reads secret, and guarded reads demand non-secret auras, so
+-- both live lookups return nothing mid-fight (SecretWhenUnitAuraRestricted
+-- plus RequiresNonSecretAura, both branches). The wrappers below hold the
+-- last readable lists and date them, the way the burst summary holds
+-- through combat instead of reporting a false quiet. Instances keep
+-- their own note: world buffs may genuinely not apply there.
+local heldBonuses, heldMissing, heldMode = nil, nil, nil
+
+local function copyLabels(list)
+  local out = {}
+  for i, v in ipairs(list) do out[i] = v end
+  return out
+end
+
+-- Snapshot while readable; a restricted call is a no-op, never a blind
+-- overwrite. The tooltip and UNIT_AURA paths call it; everything else
+-- reads through the wrappers.
+function ns.rememberBonuses()
+  if ns.inCombat() or ns.inInstance() then return false end
+  heldBonuses, heldMissing, heldMode = bonusLive(), missingLive(), mode
+  return true
+end
+
+local function heldLists()
+  if heldMode == mode and heldBonuses ~= nil and heldMissing ~= nil then
+    return copyLabels(heldBonuses), copyLabels(heldMissing)
+  end
+  return nil, nil
+end
+
+local function bonusParts()
+  if ns.inCombat() and not ns.inInstance() then
+    local held = heldLists()
+    if held ~= nil then return held end
+  end
+  return bonusLive()
+end
+
+local function missingParts()
+  if ns.inCombat() and not ns.inInstance() then
+    local _, heldM = heldLists()
+    if heldM ~= nil then
+      heldM[#heldM + 1] = "Bonuses as of combat start"
+      return heldM
+    end
+    return { "Aura scan unavailable in combat" }
+  end
+  return missingLive()
 end
 
 -- Bar segments ---------------------------------------------------------
@@ -2456,6 +2507,7 @@ ns.tooltipSuppressed = pressed
 function ns.showRepTip()
   if pressed() then return end
   if type(GameTooltip) ~= "table" then return end
+  ns.rememberBonuses()
   local progress = repFactionID and ns.readRepProgress(repFactionID) or nil
   local est = repEstimate(progress)
   GameTooltip:SetOwner(frame, "ANCHOR_TOP")
@@ -2514,6 +2566,7 @@ function ns.showTip()
   if pressed() then return end
   if type(GameTooltip) ~= "table" then return end
   if mode == "rep" then ns.showRepTip() return end
+  ns.rememberBonuses()
   local est = ns.estimate(rateTracker, clock(), baseline, paused)
   -- The same longer ETA basis refresh() applies, so the tooltip and
   -- the bar never disagree about time-to-level.
@@ -3119,6 +3172,7 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
   else
     if event == "UNIT_AURA" then
       if arg1 ~= "player" then return end
+      ns.rememberBonuses() -- eat-then-fight with no hover between still holds
     elseif event == "PLAYER_XP_UPDATE" then
       onXP()
     elseif event == "PLAYER_LEVEL_UP" then
