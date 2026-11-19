@@ -1,5 +1,7 @@
 # VocXP
 
+I make these addons for myself. You might find them useful too.
+
 Leveling an alt and wondering if your XP rate is any good. VocXP answers
 with one elegant experience bar: your level progress with rested XP and
 ready-to-turn-in quest XP overlaid, hiding Blizzard's default bar
