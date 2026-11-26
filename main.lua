@@ -197,8 +197,8 @@ local COLORS = ns.COLORS
 -- holding the wrong type resets; unknown keys are left alone.
 local defaults = { shown = true, locked = false, hideDefault = true,
   repMode = true, followLatest = false, alwaysShow = false,
-  announce = "off", density = "standard", goal = "", repPin = 0,
-  point = "BOTTOM", x = 0, y = 100 }
+  announce = "off", density = "standard", display = "auto",
+  goal = "", repPin = 0, point = "BOTTOM", x = 0, y = 100 }
 ns.defaults = defaults
 local VALID_POINTS = {
   TOPLEFT = true, TOP = true, TOPRIGHT = true, LEFT = true, CENTER = true,
@@ -224,6 +224,7 @@ local function opts()
   if not VALID_POINTS[ns.db.point] then ns.db.point = defaults.point end
   if not ns.ANNOUNCE_CHANNELS[ns.db.announce] then ns.db.announce = defaults.announce end
   if not ns.DENSITIES[ns.db.density] then ns.db.density = defaults.density end
+  if not ns.DISPLAYS[ns.db.display] then ns.db.display = defaults.display end
   if type(ns.db.goal) ~= "string" then ns.db.goal = defaults.goal end
   if type(ns.db.repPin) ~= "number" then ns.db.repPin = defaults.repPin end
   return ns.db
@@ -237,6 +238,16 @@ function ns.density()
   local d = opts().density
   if d == "minimal" or d == "standard" or d == "full" then return d end
   return "standard"
+end
+
+-- Bar display: what the bar tracks. Auto switches (XP while leveling,
+-- reputation at max level, honor in battlegrounds); the pins hold one
+-- bar everywhere and ignore Auto switching. Anything else reads auto.
+ns.DISPLAYS = { auto = true, xp = true, rep = true, honor = true }
+function ns.display()
+  local d = opts().display
+  if d == "auto" or d == "xp" or d == "rep" or d == "honor" then return d end
+  return "auto"
 end
 
 -- New-feature onboarding (voc-addons principle 5): defaults are the
@@ -400,6 +411,8 @@ end
 
 ns.WINDOW = 600 -- trailing rate window, seconds
 ns.ETA_WINDOW = 900 -- ETA basis window, seconds
+ns.RANK_WINDOW = 3600 -- rank-points rate window, seconds: rank points land
+-- in lumps on BG wins, so anything shorter reads empty between wins
 ns.GATE = 30 -- observation before estimates display, seconds
 ns.IDLE_AFTER = 60 -- quiet span before the rate admits staleness, seconds
 
@@ -611,8 +624,10 @@ function ns.etaSeconds(etaTr, now, remainingXp)
   return remainingXp * d / g
 end
 
-function ns.formatObserved(d)
-  local v = math.min(d, ns.WINDOW)
+-- Observed span in bar words, capped at the window it belongs to (the
+-- rank window reads minutes where the XP window reads seconds).
+function ns.formatObserved(d, cap)
+  local v = math.min(d, cap or ns.WINDOW)
   if v >= 60 then return ("%dm"):format(math.floor(v / 60)) end
   return ("%ds"):format(math.floor(v))
 end
@@ -622,13 +637,23 @@ function ns.titleText(est)
   if est.status == "capped" then return "Max level" end
   if est.status == "untracked" then return "No reputation tracked" end
   if est.status == "rep-capped" then return est.capLabel or "Rank complete" end
+  if est.status == "honor-capped" then return est.capLabel or "Rank complete" end
   if est.status == "unavailable" then return "Unavailable" end
   local rate = est.xpPerHour
   -- No pace exists yet on the very first paint (zero elapsed time).
   if rate == nil then return "Collecting data" end
-  local head = fmt(rate) .. (est.unit == "Rep" and " Rep/hr" or " XP/hr")
+  local head = fmt(rate) .. ns.rateSuffix(est.unit)
   if est.etaSeconds == nil then return head end
   return head .. " · " .. ns.formatEta(est.etaSeconds)
+end
+
+-- Rate suffix for the title line: XP, Rep, Honor, or Rank points per
+-- hour. Unknown units read as XP, never an error.
+function ns.rateSuffix(unit)
+  if unit == "Rep" then return " Rep/hr" end
+  if unit == "Honor" then return " Honor/hr" end
+  if unit == "Rank" then return " Rank pts/hr" end
+  return " XP/hr"
 end
 
 function ns.formatIdle(s)
@@ -666,25 +691,26 @@ function ns.subText(est)
   if s == "paused" then return "Tracking paused" end
   if s == "capped" then return "Max level" end
   if s == "unavailable" then
-    return est.unit == "Rep" and "Waiting for rep data" or "Waiting for XP data"
+    return ns.waitingText(est.unit)
   end
   if s == "untracked" then return "Watch a faction to track it" end
   if s == "rep-capped" then return "Rank complete" end
+  if s == "honor-capped" then return "Rank complete" end
   if s == "awaiting-level-update" then
-    return est.unit == "Rep" and "Rank complete; awaiting update" or "Level complete; awaiting update"
+    return ns.awaitingText(est.unit)
   end
   -- A rate on less than 3 minutes of data is an early estimate, never a
   -- forecast: both short-window statuses say so up front.
   if s == "collecting" then return "Early estimate · collecting data" end
-  local span = ns.formatObserved(est.windowSeconds)
+  local span = ns.formatObserved(est.windowSeconds, est.windowSeconds)
   if s == "no-recent-xp" then
-    return (est.unit == "Rep" and "No rep in the last " or "No XP in the last ") .. span
+    return ns.quietText(est.unit) .. span
   end
   if s == "warming-up" then
     if (est.observedSeconds or 0) < 180 then
-      return "Early estimate · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
+      return "Early estimate · last " .. ns.formatObserved(est.observedSeconds, est.windowSeconds) .. " of " .. span
     end
-    return "Warming up · last " .. ns.formatObserved(est.observedSeconds) .. " of " .. span
+    return "Warming up · last " .. ns.formatObserved(est.observedSeconds, est.windowSeconds) .. " of " .. span
   end
   if s == "idle" then
     return "Idle " .. ns.formatIdle(est.idleSeconds or 0) .. " · last " .. span
@@ -724,14 +750,37 @@ function ns.barText(est)
   if type(est) ~= "table" then return "Collecting data" end
   local s = est.status
   if s == "paused" or s == "capped" or s == "untracked"
-      or s == "rep-capped" or s == "unavailable" then
+      or s == "rep-capped" or s == "honor-capped" or s == "unavailable" then
     return ns.titleText(est)
   end
   local rate = est.xpPerHour
   if rate == nil then return "Collecting data" end
-  local head = fmt(rate) .. (est.unit == "Rep" and " Rep/hr" or " XP/hr")
+  local head = fmt(rate) .. ns.rateSuffix(est.unit)
   if est.etaSeconds == nil then return head end
   return head .. " - " .. ns.formatEtaLong(est.etaSeconds)
+end
+
+-- Status words per progression: the estimator never learns the kinds,
+-- only the format layer speaks Honor (or Rank points on Forever).
+function ns.waitingText(unit)
+  if unit == "Rep" then return "Waiting for rep data" end
+  if unit == "Honor" then return "Waiting for honor data" end
+  if unit == "Rank" then return "Waiting for rank data" end
+  return "Waiting for XP data"
+end
+
+function ns.awaitingText(unit)
+  if unit == "Rep" then return "Rank complete; awaiting update" end
+  if unit == "Honor" then return "Honor complete; awaiting update" end
+  if unit == "Rank" then return "Rank complete; awaiting update" end
+  return "Level complete; awaiting update"
+end
+
+function ns.quietText(unit)
+  if unit == "Rep" then return "No rep in the last " end
+  if unit == "Honor" then return "No honor in the last " end
+  if unit == "Rank" then return "No rank points in the last " end
+  return "No XP in the last "
 end
 
 
@@ -759,6 +808,11 @@ ns.FLARE_XP_ATLAS = "UI-HUD-ExperienceBar-Flare-XP-2x-Flipbook"
 ns.FLARE_RESTED_ATLAS = "UI-HUD-ExperienceBar-Flare-Rested-2x-Flipbook"
 ns.LEVELUP_XP_ATLAS = "UI-HUD-ExperienceBar-Fill-Experience-2x-Flipbook"
 ns.LEVELUP_RESTED_ATLAS = "UI-HUD-ExperienceBar-Fill-Rested-2x-Flipbook"
+-- Honor fills (HonorBar.lua): the native honor bar wears the honor
+-- fill with the orange faction flare and the honor level-up flipbook.
+ns.HONOR_ATLAS = "UI-HUD-ExperienceBar-Fill-Honor"
+ns.HONOR_FLARE = "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook"
+ns.HONOR_LEVELUP = "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook"
 -- Reputation fills, one row per reaction like the native watch bar
 -- (ReputationBarOverrides.lua): Hated and Hostile burn red, Unfriendly
 -- orange, Neutral yellow, everything warmer green; Renown and
@@ -1058,14 +1112,19 @@ end
 -- SavedVariables: monotonic timestamps must not cross a reload.
 local rateTracker = ns.newTracker(clock())
 local etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
+local rankTracker = ns.newTracker(clock(), ns.RANK_WINDOW)
+local honorCurrencyTracker = ns.newTracker(clock())
+local honorCurrencyBaseline = nil
 local baseline = nil
 local identity = nil
 local paused = false
-local mode = "xp" -- "xp", "rep", or "dormant"; derived from the capped snapshot, never toggled
+local mode = "xp" -- "xp", "rep", "honor", or "dormant"; derived from the capped snapshot, never toggled
 
 local function resetTrackers()
   rateTracker = ns.newTracker(clock())
   etaTracker = ns.newTracker(clock(), ns.ETA_WINDOW)
+  rankTracker = ns.newTracker(clock(), ns.RANK_WINDOW)
+  honorCurrencyTracker = ns.newTracker(clock())
   ns.sessionReset(clock()) -- a new session: totals and gain memory restart
   ns.clearSummary() -- observation restarts: the old burst never reports
   pendingAnnounce = nil -- a queued copy belongs to the old session: drop it
@@ -1080,7 +1139,7 @@ end
 -- share one deferred chat line instead of one line each. Awards still
 -- land in the trackers at once: only this line waits, never the data.
 ns.SUMMARY_QUIET = 0.15 -- stillness before a burst reports, seconds
-local summaryAcc = { count = 0, xp = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
+local summaryAcc = { count = 0, xp = 0, honor = 0, rank = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
 
 -- Busy window: combat lockdown, or the player's combat flag while the
 -- lockdown transitions. The flag can already read true at event time
@@ -1093,15 +1152,17 @@ function ns.inCombat()
 end
 
 function ns.clearSummary()
-  summaryAcc = { count = 0, xp = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
+  summaryAcc = { count = 0, xp = 0, honor = 0, rank = 0, rep = {}, repOrder = {}, lastAt = 0, busySeen = false }
 end
 
 -- One gain joins the pending summary. A quiet spell (no new gains for
 -- SUMMARY_QUIET outside combat) closes the previous burst first, so a
 -- line never spans two separate bursts; combat holds the burst open.
+-- "rank" is PvP rank points (Forever); "honor" is honor-level XP and
+-- the honor currency keeps its own tracker, never the burst line.
 function ns.noteSummaryGain(now, kind, id, factionName, amount)
   if not finite(now) or not finite(amount) or amount <= 0 then return false end
-  if kind ~= "xp" and kind ~= "rep" then return false end
+  if kind ~= "xp" and kind ~= "rep" and kind ~= "honor" and kind ~= "rank" then return false end
   if kind == "rep" then
     if type(id) ~= "number" then return false end
     if type(factionName) ~= "string" then factionName = "reputation" end
@@ -1115,6 +1176,10 @@ function ns.noteSummaryGain(now, kind, id, factionName, amount)
   if ns.inCombat() then summaryAcc.busySeen = true end
   if kind == "xp" then
     summaryAcc.xp = summaryAcc.xp + amount
+  elseif kind == "honor" then
+    summaryAcc.honor = (summaryAcc.honor or 0) + amount
+  elseif kind == "rank" then
+    summaryAcc.rank = (summaryAcc.rank or 0) + amount
   else
     local bucket = summaryAcc.rep[id]
     if bucket == nil then
@@ -1134,6 +1199,12 @@ function ns.formatSummary()
   local parts = {}
   if summaryAcc.xp > 0 then
     parts[#parts + 1] = "+" .. fmt(summaryAcc.xp) .. " XP"
+  end
+  if (summaryAcc.honor or 0) > 0 then
+    parts[#parts + 1] = "+" .. fmt(summaryAcc.honor) .. " Honor"
+  end
+  if (summaryAcc.rank or 0) > 0 then
+    parts[#parts + 1] = "+" .. fmt(summaryAcc.rank) .. " Rank pts"
   end
   local total, factions = 0, {}
   for _, id in ipairs(summaryAcc.repOrder) do
@@ -1179,18 +1250,19 @@ end
 ns.HISTORY_MAX = 5
 ns.SESSION_IDLE = 300 -- no gains for 5 minutes: the timer reads paused
 local history = {} -- newest first: { kind, amount, label, at }
-local session = { xp = 0, rep = 0, startedAt = 0, lastGainAt = nil }
+local session = { xp = 0, rep = 0, honor = 0, rank = 0, startedAt = 0, lastGainAt = nil }
 local lastTurnInAt = nil
 
 function ns.noteTurnIn(now)
   if finite(now) then lastTurnInAt = now end
 end
 
--- One stamped award joins the visible memory. kind is "xp" or "rep";
--- label names the source ("Quest", a faction, or nil for plain XP).
+-- One stamped award joins the visible memory. kind is "xp", "rep",
+-- "honor", or "rank" (PvP rank points); label names the source
+-- ("Quest", "Battleground", a faction, or nil).
 function ns.noteHistory(now, kind, amount, label)
   if not finite(now) or not finite(amount) or amount <= 0 then return false end
-  if kind ~= "xp" and kind ~= "rep" then return false end
+  if kind ~= "xp" and kind ~= "rep" and kind ~= "honor" and kind ~= "rank" then return false end
   table.insert(history, 1, { kind = kind, amount = amount,
     label = type(label) == "string" and label or nil, at = now })
   while #history > ns.HISTORY_MAX do history[#history] = nil end
@@ -1202,10 +1274,17 @@ function ns.clearHistory()
 end
 
 -- Render rows, newest first, with relative stamps.
+function ns.historyNoun(kind)
+  if kind == "rep" then return "rep" end
+  if kind == "honor" then return "Honor" end
+  if kind == "rank" then return "Rank pts" end
+  return "XP"
+end
+
 function ns.historyRows(now)
   local out = {}
   for _, h in ipairs(history) do
-    local head = "+" .. ns.commas(h.amount) .. " " .. (h.kind == "rep" and "rep" or "XP")
+    local head = "+" .. ns.commas(h.amount) .. " " .. ns.historyNoun(h.kind)
     if h.label ~= nil then head = head .. " · " .. h.label end
     out[#out + 1] = head .. " · " .. ns.ago(now - h.at)
   end
@@ -1213,7 +1292,7 @@ function ns.historyRows(now)
 end
 
 function ns.sessionReset(now)
-  session = { xp = 0, rep = 0, startedAt = finite(now) and now or 0, lastGainAt = nil }
+  session = { xp = 0, rep = 0, honor = 0, rank = 0, startedAt = finite(now) and now or 0, lastGainAt = nil }
   ns.clearHistory()
 end
 
@@ -1221,9 +1300,13 @@ end
 function ns.sessionNote(now, kind, amount)
   if paused then return false end
   if not finite(now) or not finite(amount) or amount <= 0 then return false end
-  if kind ~= "xp" and kind ~= "rep" then return false end
+  if kind ~= "xp" and kind ~= "rep" and kind ~= "honor" and kind ~= "rank" then return false end
   if kind == "xp" then
     session.xp = session.xp + amount
+  elseif kind == "honor" then
+    session.honor = (session.honor or 0) + amount
+  elseif kind == "rank" then
+    session.rank = (session.rank or 0) + amount
   else
     session.rep = session.rep + amount
   end
@@ -1238,7 +1321,7 @@ function ns.sessionStats(now)
   local stop = finite(now) and now or session.startedAt
   local idle = (last ~= nil) and (stop - last) or (stop - session.startedAt)
   if idle >= ns.SESSION_IDLE then stop = (last or session.startedAt) + ns.SESSION_IDLE end
-  return { xp = session.xp, rep = session.rep,
+  return { xp = session.xp, rep = session.rep, honor = session.honor, rank = session.rank,
     activeSecs = math.max(0, stop - session.startedAt),
     idleSecs = (idle >= ns.SESSION_IDLE) and idle or nil }
 end
@@ -1247,6 +1330,8 @@ function ns.sessionLine(now, isPaused)
   local st = ns.sessionStats(now)
   local head = "Session: +" .. fmt(st.xp) .. " XP"
   if st.rep > 0 then head = head .. " · +" .. fmt(st.rep) .. " rep" end
+  if (st.honor or 0) > 0 then head = head .. " · +" .. fmt(st.honor) .. " Honor" end
+  if (st.rank or 0) > 0 then head = head .. " · +" .. fmt(st.rank) .. " Rank pts" end
   if isPaused then return head .. " · Paused" end
   if st.idleSecs ~= nil then
     return head .. " · " .. ns.formatEtaLong(st.activeSecs) .. " · timer paused (idle)"
@@ -1567,6 +1652,26 @@ function ns.inInstance()
   return IsInInstance() == true
 end
 
+-- Battleground detection: an instanced PvP battlefield. C_PvP
+-- IsActiveBattlefield is the native honor bar's own signal
+-- (StatusTrackingManagerOverrides); the IsInInstance "pvp" type is the
+-- instance check Blizzard's own map provider uses. Either true reads
+-- as a battleground; every read is presence-gated and pcall-guarded,
+-- so a missing API reads as elsewhere, never an error.
+-- Verified live + forever: IsInInstance (InstanceDocumentation),
+-- C_PvP.IsActiveBattlefield (PvpInfoDocumentation).
+function ns.inBattleground()
+  if type(C_PvP) == "table" and type(C_PvP.IsActiveBattlefield) == "function" then
+    local ok, active = pcall(C_PvP.IsActiveBattlefield)
+    if ok and active == true then return true end
+  end
+  if type(IsInInstance) == "function" then
+    local ok, inInst, instType = pcall(IsInInstance)
+    if ok and inInst == true and instType == "pvp" then return true end
+  end
+  return false
+end
+
 -- Rep buffs, all +10%: the Faire pair, the Wickerman pair, and the
 -- Pilgrim's Bounty Spirit of Sharing (rep-only). Reputation bonuses
 -- at max level keep the list they already had.
@@ -1615,6 +1720,14 @@ local function bonusLive()
     for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
     return labels
   end
+  -- Honor has no bonus registry: battlegrounds pay honor, not XP or
+  -- rep bonuses, and the aura scan is blind in instances anyway.
+  if mode == "honor" then
+    sortByValue(parts)
+    local labels = {}
+    for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+    return labels
+  end
   if not ns.inInstance() then
     for _, entry in ipairs(ns.REGISTRY) do
       if ns.entryApplies(entry) and ns.hasEntryAura(entry) then
@@ -1648,6 +1761,13 @@ local function missingLive()
     if ns.inInstance() then
       add(nil, "Aura scan unavailable in instances")
     end
+    sortByValue(parts)
+    local labels = {}
+    for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
+    return labels
+  end
+  if mode == "honor" then
+    add(nil, "Aura scan unavailable in instances")
     sortByValue(parts)
     local labels = {}
     for _, p in ipairs(parts) do labels[#labels + 1] = p.label end
@@ -1794,6 +1914,27 @@ function ns.repLabel(o, est, progress)
   end
   if o.alwaysShow then return ns.barText(est) end
   return ns.repBarLabel(progress)
+end
+
+-- Bar label dispatch for honor: density picks the shape, alwaysShow
+-- only picks persistence. Minimal is percent, standard is today's
+-- label, full adds exact numbers to the rate line. A capped rank
+-- paints its label alone.
+function ns.honorLabel(o, est, progress)
+  if progress ~= nil and progress.capped then
+    if o.alwaysShow then return ns.barText(est) end
+    return ns.honorBarLabel(progress)
+  end
+  local d = ns.density()
+  if progress ~= nil and progress.need > 0 then
+    local pct = math.floor(progress.have / progress.need * 100 + 0.5)
+    if d == "minimal" then return ("%d%%"):format(pct) end
+    if d == "full" then
+      return ("%s/%s (%d%%) · %s"):format(fmt(progress.have), fmt(progress.need), pct, ns.barText(est))
+    end
+  end
+  if o.alwaysShow then return ns.barText(est) end
+  return ns.honorBarLabel(progress)
 end
 
 -- Ready-to-turn-in quest XP --------------------------------------------
@@ -2282,6 +2423,134 @@ function ns.repBaselineRead()
   return repBaseline
 end
 
+-- Honor mode ----------------------------------------------------------
+-- In an instanced Battleground the bar pivots from XP/reputation to
+-- Honor: the native honor bar's own progression (HonorBarMixin) is
+-- current honor over the level requirement with the honor level as
+-- context. The rolling estimator never learns the kind: honor paints
+-- synthetic XP-shaped snapshots through it with est.unit set, and only
+-- the format layer speaks Honor.
+-- Retail reads the prestige honor trio; Forever reads PvP rank points
+-- instead: the Camelot character sheet (PVPRankFrame) paints rank
+-- progress from C_MajorFactions.GetMajorFactionProgressionInfo(2800),
+-- and UnitHonor reads zero there. Retail and Forever genuinely differ,
+-- so each side reads only its own confirmed source.
+-- Verified: UnitHonor, UnitHonorMax, UnitHonorLevel live + forever
+-- (UnitDocumentation); GetMajorFactionProgressionInfo forever-only
+-- (MajorFactionsDocumentation, absent on live);
+-- C_PvP.IsActiveBattlefield live + forever (PvpInfoDocumentation);
+-- HONOR_XP_UPDATE (UnitDocumentation), HONOR_LEVEL_UPDATE
+-- (PvpInfoDocumentation); instanceType "pvp" (GroupMembersDataProvider).
+local honorBaseline = nil
+
+-- The PvP rank-points faction behind the Forever character sheet
+-- (PVPRankFrame.lua): rank progress is renownReputationEarned over
+-- renownLevelThreshold at renownLevel.
+ns.PVP_RANK_POINTS_FACTION_ID = 2800
+
+-- One honor read: current honor, the level requirement, and the honor
+-- level. Unreadable or degenerate reads return nil, never a guess.
+function ns.readUnitHonorProgress()
+  if type(UnitHonor) ~= "function" or type(UnitHonorMax) ~= "function"
+      or type(UnitHonorLevel) ~= "function" then
+    return nil
+  end
+  local okCur, have = pcall(UnitHonor, "player")
+  local okNeed, need = pcall(UnitHonorMax, "player")
+  local okLevel, level = pcall(UnitHonorLevel, "player")
+  if not okCur or not okNeed or not okLevel then return nil end
+  if anySecret(have, need, level) then return nil end
+  if not finite(have) or not finite(need) or not finite(level) then return nil end
+  if need <= 0 or have < 0 or level < 1 or level ~= math.floor(level) then return nil end
+  if have > need then have = need end
+  return { have = have, need = need, level = level, kind = "honor",
+    levelLabel = ("Honor Level %d"):format(level), capped = false }
+end
+
+-- One rank-points read (Forever): the same shape as the honor read,
+-- sourced from the rank-points faction the sheet paints. A zero or
+-- missing threshold at max rank paints a full bar instead of a guess.
+function ns.readRankPointsProgress()
+  if type(C_MajorFactions) ~= "table" then return nil end
+  if type(C_MajorFactions.GetMajorFactionProgressionInfo) ~= "function" then return nil end
+  local ok, info = pcall(C_MajorFactions.GetMajorFactionProgressionInfo,
+    ns.PVP_RANK_POINTS_FACTION_ID)
+  if not ok or type(info) ~= "table" then return nil end
+  local level, have, need = info.renownLevel, info.renownReputationEarned, info.renownLevelThreshold
+  if anySecret(level, have, need) then return nil end
+  if not finite(level) or not finite(have) or not finite(need) then return nil end
+  if level < 0 or level ~= math.floor(level) or have < 0 then return nil end
+  if need <= 0 then
+    return { have = 1, need = 1, level = level, kind = "rank",
+      levelLabel = ("Rank %d"):format(level),
+      capLabel = ("Rank %d"):format(level), capped = true }
+  end
+  if have > need then have = need end
+  return { have = have, need = need, level = level, kind = "rank",
+    levelLabel = ("Rank %d"):format(level), capped = false }
+end
+
+-- Flavor-dispatched honor read: rank points on Forever, the honor
+-- trio everywhere else.
+function ns.readHonorProgress()
+  if ns.clientFlavor() == "forever" then
+    return ns.readRankPointsProgress()
+  end
+  return ns.readUnitHonorProgress()
+end
+
+-- Honor gain between two progress reads. Same-level deltas are exact;
+-- a single level-up carries the remainder across; anything else (a
+-- kind swap, a loss, a multi-level jump) resyncs with nil, exactly
+-- like ns.gain.
+function ns.honorGain(old, new)
+  if type(old) ~= "table" or type(new) ~= "table" then return nil end
+  if new.capped or old.capped then return nil end
+  if old.kind ~= nil and new.kind ~= nil and old.kind ~= new.kind then return nil end
+  if not finite(old.level) or not finite(new.level) then return nil end
+  if not finite(old.have) or not finite(new.have) then return nil end
+  if not finite(old.need) or not finite(new.need) then return nil end
+  if new.level == old.level then
+    if new.have >= old.have then return new.have - old.have end
+    return nil
+  elseif new.level == old.level + 1 then
+    return math.max(0, old.need - old.have + new.have)
+  end
+  return nil
+end
+
+function ns.honorBaselineRead()
+  return honorBaseline
+end
+
+function ns.setHonorBaseline(progress)
+  honorBaseline = progress
+end
+
+-- Bar label: honor (or rank points on Forever) with in-level
+-- numbers, like the rep label shape. A capped rank paints its label
+-- alone like the native bar at max.
+function ns.honorBarLabel(progress)
+  if progress == nil then return "No honor data" end
+  if progress.capped then return progress.capLabel or "Rank complete" end
+  if progress.kind == "rank" then
+    local pct = math.max(0, math.min(100, math.floor(progress.have / progress.need * 100 + 0.5)))
+    return ("Rank %d  %s/%s (%d%%)"):format(progress.level, fmt(progress.have), fmt(progress.need), pct)
+  end
+  local pct = math.max(0, math.min(100, math.floor(progress.have / progress.need * 100 + 0.5)))
+  return ("Honor %s/%s (%d%%)"):format(fmt(progress.have), fmt(progress.need), pct)
+end
+
+-- Stats line: the honor-level (or rank) context the bar label skips.
+function ns.honorStatsLine(progress)
+  if progress == nil or progress.capped then return nil end
+  local pct = math.max(0, math.min(100, math.floor(progress.have / progress.need * 100 + 0.5)))
+  if progress.kind == "rank" then
+    return ("Rank %d · %d%% to rank %d"):format(progress.level, pct, progress.level + 1)
+  end
+  return ("%s · %d%% to level %d"):format(progress.levelLabel, pct, progress.level + 1)
+end
+
 -- The native cluster hides wholesale while ours shows: Blizzard offers
 -- no per-bar switch, so watched reputation and honor hide with the XP
 -- bar and the setting tooltip says so. Re-applied every refresh
@@ -2400,11 +2669,110 @@ local function refreshRep(o)
   ns.barShown(o.shown)
 end
 
+-- One honor estimate for the bar and the tooltip, so they never
+-- disagree. Unreadable honor reads as unavailable; otherwise a
+-- synthetic snapshot flows through the same estimator as XP, with
+-- est.unit set so only the format layer speaks Honor (or Rank).
+-- Rank points land in lumps on BG wins, so rank progress estimates
+-- over the long rank window for both rate and ETA: a short window
+-- would read empty between wins. Honor-level XP keeps the standard
+-- windows.
+local function honorEstimate(progress)
+  local unit = (type(progress) == "table" and progress.kind == "rank") and "Rank" or "Honor"
+  if progress == nil then
+    return { status = "unavailable", windowSeconds = rateTracker.window,
+      observedSeconds = 0, windowXp = 0, idleSeconds = nil,
+      xpPerHour = nil, remainingXp = nil, etaSeconds = nil, unit = unit }
+  end
+  if progress.capped then
+    return { status = "honor-capped", windowSeconds = rateTracker.window,
+      observedSeconds = 0, windowXp = 0, idleSeconds = nil,
+      xpPerHour = nil, remainingXp = nil, etaSeconds = nil, unit = unit,
+      capLabel = progress.capLabel }
+  end
+  local now = clock()
+  local snap = { level = progress.level or 0, xp = progress.have, req = progress.need, capped = false }
+  local tr = (progress.kind == "rank") and rankTracker or rateTracker
+  local est = ns.estimate(tr, now, snap, paused)
+  est.unit = unit
+  local basis = (progress.kind == "rank") and rankTracker or etaTracker
+  local longEta = ns.etaSeconds(basis, now, est.remainingXp or 0)
+  if est.etaSeconds and (est.remainingXp or 0) > 0 then
+    est.etaSeconds = longEta or est.etaSeconds
+  end
+  return est
+end
+
+-- Fill art for honor mode: the native honor triple for honor
+-- progress, the native Hated red triple for rank points (Forever).
+-- Row 1 of ReputationBarOverrides is red fill, orange faction flare,
+-- and the honor level-up flipbook, so the rank bar wears Blizzard's
+-- own red bar instead of a tint. Unreadable progress keeps the
+-- flavor's own art, never a guess from the other side.
+function ns.honorArt(progress)
+  local kind = type(progress) == "table" and progress.kind or nil
+  if kind == "honor" then
+    return ns.HONOR_ATLAS, ns.HONOR_FLARE, ns.HONOR_LEVELUP
+  end
+  if kind == "rank" then
+    return ns.REP_FILL[1], ns.REP_FLARE[1], ns.REP_LEVELUP[1]
+  end
+  if ns.clientFlavor() == "forever" then
+    return ns.REP_FILL[1], ns.REP_FLARE[1], ns.REP_LEVELUP[1]
+  end
+  return ns.HONOR_ATLAS, ns.HONOR_FLARE, ns.HONOR_LEVELUP
+end
+
+local function refreshHonor(o)
+  ns.applyGeometry()
+  local progress = ns.readHonorProgress()
+  -- Read-only: the baseline moves only on honor events (onHonor),
+  -- so a paint never awards or resyncs gains away.
+  if progress then
+    if type(bar.SetAnimatedValues) == "function" then
+      bar:SetAnimatedValues(progress.have, 0, progress.need, progress.level)
+    else
+      bar:SetMinMaxValues(0, progress.need)
+      bar:SetValue(progress.have)
+    end
+    local hEst = honorEstimate(progress)
+    barText:SetText(ns.honorLabel(o, hEst, progress))
+    if o.alwaysShow then barText:Show() end
+    applyBarArt(ns.honorArt(progress))
+  else
+    if type(bar.SetAnimatedValues) == "function" then
+      bar:SetAnimatedValues(0, 0, 1, nil)
+    else
+      bar:SetMinMaxValues(0, 1)
+      bar:SetValue(0)
+    end
+    barText:SetText(ns.honorLabel(o, honorEstimate(nil), nil))
+    if o.alwaysShow then barText:Show() end
+    applyBarArt(ns.honorArt(nil))
+  end
+  -- No overlays in honor mode: rested and quest XP don't exist here.
+  restFill:Hide()
+  questFill:Hide()
+  pip:Hide()
+  applyNativeBar()
+  ns.barShown(o.shown)
+end
+
 local function refresh()
   local o = opts()
   local now = clock()
   -- Bursts report here: deferred through combat, netted after 0.15s of quiet.
   ns.flushSummary(now)
+  -- Battlegrounds pivot the bar to honor whatever the stored mode
+  -- is. The switch lives in ns.checkBattleground (defined with the
+  -- modes below, beside the event lists it owns): refresh only asks
+  -- it, so this body never reaches past its own upvalues. The 1s
+  -- ticker re-checks every refresh so zone events that arrive
+  -- without us stay covered.
+  if type(ns.checkBattleground) == "function" and ns.checkBattleground() then
+    refreshHonor(o)
+    return
+  end
   if mode == "dormant" then
     ns.barShown(false)
     applyNativeBar()
@@ -2471,6 +2839,22 @@ local function refresh()
     else
       pip:Hide()
     end
+  elseif baseline ~= nil and baseline.capped then
+    -- Pinned Experience at the cap has no level progress: an empty bar
+    -- reading Max level. Unknown snapshots (no seg, not capped) keep
+    -- whatever the last paint left, never a guessed bar.
+    if type(bar.SetAnimatedValues) == "function" then
+      bar:SetAnimatedValues(0, 0, 1, nil)
+    else
+      bar:SetMinMaxValues(0, 1)
+      bar:SetValue(0)
+    end
+    barText:SetText(ns.xpLabel(o, ns.estimate(rateTracker, now, baseline, paused), baseline, nil))
+    if o.alwaysShow then barText:Show() end
+    applyBarArt(ns.XP_ATLAS, ns.FLARE_XP_ATLAS, ns.LEVELUP_XP_ATLAS)
+    restFill:Hide()
+    questFill:Hide()
+    pip:Hide()
   end
   applyNativeBar()
   ns.barShown(o.shown)
@@ -2562,10 +2946,69 @@ function ns.showRepTip()
   GameTooltip:Show()
 end
 
+-- Honor-currency rate line for the rank tooltip: the trailing-window
+-- rate over the standard window, or collecting-data while the window
+-- holds nothing. Nil when the currency API is missing, so the line
+-- omits itself instead of guessing.
+function ns.honorCurrencyLine(now)
+  if ns.readHonorCurrency() == nil then return nil end
+  local d, g = observe(honorCurrencyTracker, now)
+  if d > 0 and g > 0 then
+    return ("Honor: %s/hr"):format(fmt(g / d * 3600))
+  end
+  return "Honor: collecting data"
+end
+
+function ns.showHonorTip()
+  if pressed() then return end
+  if type(GameTooltip) ~= "table" then return end
+  ns.rememberBonuses()
+  local progress = ns.readHonorProgress()
+  local est = honorEstimate(progress)
+  GameTooltip:SetOwner(frame, "ANCHOR_TOP")
+  GameTooltip:ClearLines()
+  GameTooltip:SetText(ns.titleText(est), COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
+  GameTooltip:AddLine(ns.subText(est), COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  if progress then
+    local stats = ns.honorStatsLine(progress)
+    if stats then
+      GameTooltip:AddLine(stats, COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    end
+  end
+  -- Rank mode names both flows: rank points per hour ride the title
+  -- above, and the spendable honor currency gets its own line here.
+  if progress ~= nil and progress.kind == "rank" then
+    local currency = ns.honorCurrencyLine(clock())
+    if currency then
+      GameTooltip:AddLine(currency, COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+    end
+  end
+  GameTooltip:AddLine(ns.sessionLine(clock(), paused),
+    COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  for _, h in ipairs(ns.historyRows(clock())) do
+    GameTooltip:AddLine(h, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
+  GameTooltip:AddLine(" ", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  GameTooltip:AddLine("Bonuses", COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
+  local bonuses = bonusParts()
+  if #bonuses == 0 then
+    GameTooltip:AddLine("No honor bonus", COLORS.red[1], COLORS.red[2], COLORS.red[3], true)
+  else
+    for _, b in ipairs(bonuses) do
+      GameTooltip:AddLine(b, COLORS.green[1], COLORS.green[2], COLORS.green[3], true)
+    end
+  end
+  for _, m in ipairs(missingParts()) do
+    GameTooltip:AddLine(m, COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
+  end
+  GameTooltip:Show()
+end
+
 function ns.showTip()
   if pressed() then return end
   if type(GameTooltip) ~= "table" then return end
   if mode == "rep" then ns.showRepTip() return end
+  if mode == "honor" then ns.showHonorTip() return end
   ns.rememberBonuses()
   local est = ns.estimate(rateTracker, clock(), baseline, paused)
   -- The same longer ETA basis refresh() applies, so the tooltip and
@@ -2636,16 +3079,21 @@ end
 
 -- Modes ------------------------------------------------------------------
 -- Leveling characters track XP; max-level characters track reputation
--- (or go dormant when repMode is off). Each mode owns its event set;
--- entering-world, cap-change, regen, and aura signals stay registered in
--- every active mode. Entering a mode restarts observation: a rate
--- never spans two different progressions.
+-- (or go dormant when repMode is off); an instanced battleground
+-- pivots any of them to honor until it ends. Each mode owns its event
+-- set; entering-world, cap-change, regen, and aura signals stay
+-- registered in every active mode. Entering a mode restarts
+-- observation: a rate never spans two different progressions.
 local ticker
 local xpEvents = { "PLAYER_XP_UPDATE", "PLAYER_LEVEL_UP", "PLAYER_EQUIPMENT_CHANGED",
   "UPDATE_EXHAUSTION", "PLAYER_UPDATE_RESTING",
   "QUEST_LOG_UPDATE", "QUEST_TURNED_IN", "QUEST_ACCEPTED", "QUEST_REMOVED", "QUEST_COMPLETE",
   "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
 local repEvents = { "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED", "FACTION_STANDING_CHANGED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
+local honorEvents = { "HONOR_XP_UPDATE", "HONOR_LEVEL_UPDATE",
+  "UPDATE_FACTION", "MAJOR_FACTION_RENOWN_LEVEL_CHANGED",
+  "CURRENCY_DISPLAY_UPDATE",
+  "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED" }
 
 local function setEvents(list, on)
   for _, e in ipairs(list) do
@@ -2656,7 +3104,10 @@ end
 local function enterXPMode()
   mode = "xp"
   repBaseline = nil
+  ns.setHonorBaseline(nil)
+  ns.setHonorCurrencyBaseline(nil)
   setEvents(repEvents, false)
+  setEvents(honorEvents, false)
   setEvents(xpEvents, true)
   frame:RegisterEvent("UNIT_AURA")
   if not ticker and type(C_Timer) == "table"
@@ -2667,7 +3118,10 @@ end
 
 local function enterRepMode()
   mode = "rep"
+  ns.setHonorBaseline(nil)
+  ns.setHonorCurrencyBaseline(nil)
   setEvents(xpEvents, false)
+  setEvents(honorEvents, false)
   setEvents(repEvents, true)
   frame:RegisterEvent("UNIT_AURA")
   if not ticker and type(C_Timer) == "table"
@@ -2687,6 +3141,22 @@ local function enterRepMode()
   end
 end
 
+local function enterHonorMode()
+  mode = "honor"
+  setEvents(xpEvents, false)
+  setEvents(repEvents, false)
+  setEvents(honorEvents, true)
+  frame:RegisterEvent("UNIT_AURA")
+  if not ticker and type(C_Timer) == "table"
+      and type(C_Timer.NewTicker) == "function" then
+    ticker = C_Timer.NewTicker(1, refresh)
+  end
+  ns.setHonorBaseline(ns.readHonorProgress())
+  ns.setHonorCurrencyBaseline(ns.readHonorCurrency())
+  resetTrackers()
+  paused = false
+end
+
 local function enterDormant()
   mode = "dormant"
   ns.barShown(false)
@@ -2694,15 +3164,30 @@ local function enterDormant()
   if ticker then ticker:Cancel() ticker = nil end
   setEvents(xpEvents, false)
   setEvents(repEvents, false)
+  setEvents(honorEvents, false)
   frame:UnregisterEvent("UNIT_AURA")
   applyNativeBar()
 end
 
--- Enter the mode a snapshot calls for. Entering rep mode or waking
--- from dormancy restarts observation; callers already reset when the
+-- Enter the mode a snapshot calls for. A display pin holds one bar
+-- everywhere and wins over everything below; auto derives the mode
+-- from the snapshot as before. Entering rep mode or waking from
+-- dormancy restarts observation; callers already reset when the
 -- character itself changed.
 local function activateMode(snap)
-  if snap.capped and opts().repMode then
+  local disp = ns.display()
+  if disp == "xp" then
+    if mode ~= "xp" then
+      resetTrackers()
+      paused = false
+    end
+    baseline = snap -- callers pass the current snapshot: resync, add nothing
+    enterXPMode()
+  elseif disp == "rep" then
+    if mode ~= "rep" then enterRepMode() end
+  elseif disp == "honor" then
+    if mode ~= "honor" then enterHonorMode() end
+  elseif snap.capped and opts().repMode then
     if mode ~= "rep" then enterRepMode() end
   elseif snap.capped then
     enterDormant()
@@ -2781,6 +3266,150 @@ local function readSnapshot()
   local okXp, xp = pcall(UnitXP, "player")
   if not okXp then return { level = 0, xp = 0, req = 0, capped = false } end
   return { level = level, xp = xp, req = max, capped = false }
+end
+
+-- Honor level-up line: one local chat fact when the new progress sits
+-- exactly one honor level (or rank, on Forever) above the old, like a
+-- rep rank-up. Same-level gains stay silent (the rate owns them);
+-- anything else resyncs silently like ns.honorGain. Dings alone
+-- route: honor stays local.
+function ns.honorLevelMessage(old, new)
+  if type(old) ~= "table" or type(new) ~= "table" then return nil end
+  if type(old.level) ~= "number" or type(new.level) ~= "number" then return nil end
+  if new.level ~= old.level + 1 then return nil end
+  if new.kind == "rank" then return ("rank %d"):format(new.level) end
+  return ("honor level %d"):format(new.level)
+end
+
+-- Honor currency: the spendable Honor both flavors pay out (verified:
+-- Constants.CurrencyConsts.HONOR_CURRENCY_ID is 1792 live + forever in
+-- CurrencyConstantsDocumentation, and the camelot-loading PVPMatchResults
+-- keys its end-of-match honor frame on that same ID). Read through
+-- C_CurrencyInfo.GetCurrencyInfo (MayReturnNothing, CurrencyInfo docs).
+ns.HONOR_CURRENCY_ID = 1792
+
+-- One honor-currency read: the wallet stock, or nil when the API is
+-- missing or refuses. Spending also moves the stock, so only positive
+-- deltas ever award; the baseline below always resyncs.
+function ns.readHonorCurrency()
+  if type(C_CurrencyInfo) ~= "table" then return nil end
+  if type(C_CurrencyInfo.GetCurrencyInfo) ~= "function" then return nil end
+  local ok, info = pcall(C_CurrencyInfo.GetCurrencyInfo, ns.HONOR_CURRENCY_ID)
+  if not ok or type(info) ~= "table" then return nil end
+  if ns.isSecret(info.quantity) then return nil end
+  if not finite(info.quantity) or info.quantity < 0 then return nil end
+  return info.quantity
+end
+
+function ns.honorCurrencyBaselineRead()
+  return honorCurrencyBaseline
+end
+
+function ns.setHonorCurrencyBaseline(amount)
+  honorCurrencyBaseline = amount
+end
+
+-- Honor gains arrive as honor updates: re-read progress, then
+-- reconstruct at most one award from the baseline delta, exactly like
+-- the XP path. A repeat event at the same value only resyncs. Rank
+-- points feed the long rank window; honor-level XP feeds the standard
+-- pair. Session, history, and burst lines carry the progression kind,
+-- so rank points never read as Honor.
+local function onHonor()
+  if mode ~= "honor" then
+    -- Only auto switches on a stray honor event; pins hold their bar.
+    if ns.display() == "auto" and ns.inBattleground() then enterHonorMode() end
+    if mode ~= "honor" then return end
+  end
+  local snap = ns.readHonorProgress()
+  if snap == nil then
+    refresh()
+    return
+  end
+  local old = ns.honorBaselineRead()
+  if not paused and old ~= nil then
+    local award = ns.honorGain(old, snap)
+    if award and award > 0 then
+      local stamp = clock()
+      local kind = (snap.kind == "rank") and "rank" or "honor"
+      if snap.kind == "rank" then
+        ns.addAward(rankTracker, stamp, award)
+      else
+        ns.addAward(rateTracker, stamp, award)
+        ns.addAward(etaTracker, stamp, award)
+      end
+      ns.sessionNote(stamp, kind, award)
+      ns.noteHistory(stamp, kind, award, "Battleground")
+      ns.noteSummaryGain(stamp, kind, nil, nil, award)
+    end
+  end
+  local msg = old ~= nil and ns.honorLevelMessage(old, snap) or nil
+  if msg then ns.say(msg) end
+  ns.setHonorBaseline(snap)
+  refresh()
+end
+
+-- Honor-currency gains arrive as CURRENCY_DISPLAY_UPDATE: re-read the
+-- wallet, award positive deltas to the currency tracker, and resync
+-- the baseline either way (spending moves the stock down and never
+-- awards). Filtered to the honor currency; every other currency only
+-- resyncs nothing and returns. Tracked only in honor mode: elsewhere
+-- the wallet moves for reasons the bar does not report.
+local function onHonorCurrency(currencyType)
+  if mode ~= "honor" then return end
+  if type(currencyType) == "number" and currencyType ~= ns.HONOR_CURRENCY_ID then return end
+  local amount = ns.readHonorCurrency()
+  if amount == nil then return end
+  local old = ns.honorCurrencyBaselineRead()
+  ns.setHonorCurrencyBaseline(amount)
+  if old == nil or paused then
+    refresh()
+    return
+  end
+  if amount > old then
+    ns.addAward(honorCurrencyTracker, clock(), amount - old)
+  end
+  refresh()
+end
+
+-- Battleground pivot, called from refresh and the zone/honor events:
+-- entering starts fresh observation, leaving restores XP/rep below.
+-- Returns true while honor owns the bar.
+function ns.checkBattleground()
+  -- A display pin holds its bar everywhere: only auto switches.
+  if ns.display() ~= "auto" then return mode == "honor" end
+  if ns.inBattleground() then
+    if mode ~= "honor" then enterHonorMode() end
+    return true
+  end
+  if mode == "honor" then
+    -- Left the battleground: restore the stored progression's mode.
+    -- A fresh snapshot resyncs without awards; history stays.
+    baseline = readSnapshot()
+    activateMode(baseline)
+  end
+  return false
+end
+
+-- Apply the display pin now, so slash and panel agree immediately:
+-- pins enter their mode at once, auto re-derives from the world.
+function ns.applyDisplay()
+  local disp = ns.display()
+  if disp == "auto" then
+    if not ns.checkBattleground() then activateMode(readSnapshot()) end
+  elseif disp == "xp" then
+    if mode ~= "xp" then
+      resetTrackers()
+      paused = false
+    end
+    baseline = readSnapshot()
+    enterXPMode()
+  elseif disp == "rep" then
+    if mode ~= "rep" then enterRepMode() end
+  elseif disp == "honor" then
+    if mode ~= "honor" then enterHonorMode() end
+  end
+  refresh()
 end
 
 -- Rank-up line for the tracked faction: one chat fact when the new
@@ -3016,10 +3645,10 @@ function ns.ensureSettings()
     return s, init
   end
   check("shown", "Show the bar",
-    "Show the bar: XP with XP/hr and bonuses while leveling, reputation with Rep/hr at max level.",
+    "Show the bar: XP with XP/hr and bonuses while leveling, reputation with Rep/hr at max level, honor with Honor/hr in battlegrounds.",
     function() refresh() end)
   check("alwaysShow", "Always show bar text",
-    "Keep the XP/hr and time-to-level line on the bar at all times instead of showing it on hover only.",
+    "Keep the rate and time-to-next line on the bar at all times instead of showing it on hover only.",
     function() refresh() if not opts().alwaysShow then ns.hideBarLabel() end end)
   check("hideDefault", "Hide the default XP bar",
     "Hide Blizzard's status bar cluster while VocXP shows. Watched reputation and honor bars hide with it.",
@@ -3082,6 +3711,27 @@ function ns.ensureSettings()
       click(true)
     end)
   end
+  -- Bar display: a dropdown, like density above.
+  if type(Settings.CreateDropdown) == "function"
+      and type(Settings.CreateControlTextContainer) == "function" then
+    local function displayOptions()
+      local container = Settings.CreateControlTextContainer()
+      container:Add("auto", "Auto")
+      container:Add("xp", "Experience")
+      container:Add("rep", "Reputation")
+      container:Add("honor", "Honor")
+      return container:GetData()
+    end
+    local ds = Settings.RegisterAddOnSetting(
+      category, "VocXP_display", "display", db, type(defaults.display),
+      "Bar display" .. ns.newSuffix("display"), defaults.display)
+    Settings.CreateDropdown(category, ds, displayOptions,
+      "Auto switches XP, reputation, and honor; pins hold one bar everywhere.")
+    ns.onSettingChanged(ds, function()
+      ns.applyDisplay()
+      click(true)
+    end)
+  end
   check("locked", "Lock the position",
     "Keep the bar where it is. Unlocked, drag it anywhere; it remembers.",
     function() refresh() end)
@@ -3120,8 +3770,9 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
   elseif event == "PLAYER_MAX_LEVEL_UPDATE" then
     -- Cap raised (or lowered): re-derive the mode from a fresh
     -- snapshot. A raise wakes everything; staying capped is a no-op.
+    -- A battleground keeps the honor bar whatever the cap does.
     baseline = readSnapshot()
-    activateMode(baseline)
+    if not ns.checkBattleground() then activateMode(baseline) end
     refresh()
     return
   elseif event == "PLAYER_ENTERING_WORLD" then
@@ -3150,7 +3801,16 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
       paused = false
     end
     baseline = snap -- zone loads carry no timestamped gains: resync, add nothing
-    if snap.capped and o.repMode then
+    local disp = ns.display()
+    if disp ~= "auto" then
+      -- A display pin holds its bar everywhere: cap, zone, and
+      -- battleground all resolve through the pin.
+      activateMode(snap)
+    elseif ns.inBattleground() then
+      -- Zoning into a battleground pivots to honor; leaving
+      -- re-derives XP/rep below on the way out.
+      if mode ~= "honor" or switched then enterHonorMode() end
+    elseif snap.capped and o.repMode then
       if mode == "rep" and not switched then
         -- Zone load inside rep mode: silent resync, history kept.
         ns.scanRepGains()
@@ -3178,11 +3838,21 @@ frame:SetScript("OnEvent", function(_, event, arg1, arg2)
     elseif event == "PLAYER_LEVEL_UP" then
       onLevelUp()
     elseif event == "UPDATE_FACTION" then
-      onRep()
+      -- Rank points arrive as faction updates on Forever; in honor
+      -- mode they belong to the honor path, never the rep one.
+      if mode == "honor" then onHonor() else onRep() end
     elseif event == "MAJOR_FACTION_RENOWN_LEVEL_CHANGED" then
-      onRep(arg1, nil, true)
+      if mode == "honor" then onHonor() else onRep(arg1, nil, true) end
     elseif event == "FACTION_STANDING_CHANGED" then
       onRep(arg1, arg2, false)
+    elseif event == "HONOR_XP_UPDATE" or event == "HONOR_LEVEL_UPDATE" then
+      onHonor()
+    elseif event == "CURRENCY_DISPLAY_UPDATE" then
+      if mode == "honor" then onHonorCurrency(arg1) end
+    elseif event == "ZONE_CHANGED" or event == "ZONE_CHANGED_NEW_AREA" then
+      -- Crossing into or out of a battleground pivots the bar; the
+      -- ticker re-check covers a missed zone event, so this is cheap.
+      ns.checkBattleground()
     elseif event == "PLAYER_REGEN_ENABLED" then
       ns.flushAnnounce() -- combat's end releases one queued copy, if any
     elseif event == "ADDON_ACTION_BLOCKED" then
@@ -3286,7 +3956,7 @@ function VocXP_CompartmentEnter(_, button)
   GameTooltip:SetOwner(button, "ANCHOR_LEFT")
   GameTooltip:ClearLines()
   GameTooltip:SetText("VocXP", COLORS.gold[1], COLORS.gold[2], COLORS.gold[3])
-  GameTooltip:AddLine("Session XP/hr and bonuses on an elegant XP bar; reputation at max level.",
+  GameTooltip:AddLine("Session XP/hr and bonuses on an elegant XP bar; reputation at max level, honor in battlegrounds.",
     COLORS.text[1], COLORS.text[2], COLORS.text[3], true)
   GameTooltip:AddLine("/vxp shows or hides it. /vxp help lists the rest.",
     COLORS.muted[1], COLORS.muted[2], COLORS.muted[3], true)
@@ -3355,6 +4025,7 @@ ns.HELP = {
   "/vxp rep track pin a faction by name or ID",
   "/vxp rep auto  follow watched or latest gains again",
   "/vxp density   bar text: minimal, standard, or full",
+  "/vxp display  bar: auto, xp, rep, or honor",
   "/vxp goal 50   set a target level or rank (clear drops it)",
   "/vxp announce  ding lines to party, guild, or off",
   "/vxp diag      dump snapshot and capture state for a bug report",
@@ -3391,6 +4062,10 @@ SlashCmdList.VOCXP = function(msg)
       resetTrackers()
       baseline = readSnapshot()
       if mode == "rep" then repBaseline = repFactionID and ns.readRepProgress(repFactionID) or nil end
+      if mode == "honor" then
+        ns.setHonorBaseline(ns.readHonorProgress())
+        ns.setHonorCurrencyBaseline(ns.readHonorCurrency())
+      end
     end
     refresh()
     click(paused)
@@ -3401,6 +4076,10 @@ SlashCmdList.VOCXP = function(msg)
     paused = false
     refresh()
     if mode == "rep" then repBaseline = repFactionID and ns.readRepProgress(repFactionID) or nil end
+    if mode == "honor" then
+      ns.setHonorBaseline(ns.readHonorProgress())
+      ns.setHonorCurrencyBaseline(ns.readHonorCurrency())
+    end
     click(true)
     ns.say("session reset")
   elseif msg == "rep" then
@@ -3445,6 +4124,18 @@ SlashCmdList.VOCXP = function(msg)
       ns.say("bar text " .. d)
     else
       ns.say("bar text " .. ns.density() .. " (minimal, standard, or full)")
+    end
+  elseif msg == "display" then
+    ns.say("bar display " .. ns.display() .. " (auto, xp, rep, or honor)")
+  elseif msg:sub(1, 8) == "display " then
+    local d = strtrim(msg:sub(9))
+    if ns.DISPLAYS[d] then
+      opts().display = d
+      ns.applyDisplay()
+      click(true)
+      ns.say("bar display " .. d)
+    else
+      ns.say("bar display " .. ns.display() .. " (auto, xp, rep, or honor)")
     end
   elseif msg == "goal" then
     local target = ns.goalTarget()

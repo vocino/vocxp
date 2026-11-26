@@ -25,7 +25,9 @@ globals = {
 read_globals = {
   "C_AddOns", -- GetAddOnInterfaceVersion: own-toc flavor check; IsAddOnLoaded: rivals and BugGrabber checks (live + forever)
   "C_ChatInfo", -- SendChatMessage: routed ding/rank copies (live + forever)
+  "C_CurrencyInfo", -- GetCurrencyInfo: honor-currency stock behind the rank tooltip (live + forever)
   "C_GossipInfo", "C_MajorFactions", "C_Reputation", -- rep mode: friendship, renown, standings (live + forever)
+  "C_PvP", -- IsActiveBattlefield: battleground detection behind the honor bar (live + forever)
   "C_QuestLog", "C_Timer", "C_UnitAuras",
   "CreateFrame", "EventRegistry", "GameTooltip",
   "C_Container", "C_Item", -- bag walk for the food hint + item class read (live + forever)
@@ -40,7 +42,7 @@ read_globals = {
   "IsInGroup", -- group presence gate for routed copies (Blizzard's own argless use)
   "LE_PARTY_CATEGORY_HOME", "LE_PARTY_CATEGORY_INSTANCE", -- group categories, C-defined like NUM_BAG_SLOTS
   "Settings", "StatusTrackingBarManager", "UIParent",
-  "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "strtrim",
+  "UnitGUID", "UnitLevel", "UnitXP", "UnitXPMax", "UnitHonor", "UnitHonorMax", "UnitHonorLevel", "strtrim",
   "MAX_REPUTATION_REACTION", -- standing ceiling, Blizzard's ReputationFrame (live + forever)
   "STATUS_BAR_CONTAINER_WIDTH", "STATUS_BAR_NUM_SEGMENTS", -- native bar geometry,
   "STATUS_BAR_SIZE_ADJUSTMENT", "EXHAUSTION_TICK_OFFSET_Y", -- Forever's StatusTrackingBarConstants (absent on live)

@@ -37,6 +37,19 @@ local function loadAddon(world)
   g.UnitXPMax = function() return world.max end
   g.UnitLevel = function() return world.level end
   g.UnitGUID = function() return world.guid end
+  g.UnitHonor = function() return world.honor end
+  g.UnitHonorMax = function() return world.honorMax end
+  g.UnitHonorLevel = function() return world.honorLevel end
+  g.C_PvP = {
+    IsActiveBattlefield = function() return world.activeBattlefield == true end,
+  }
+  g.C_CurrencyInfo = {
+    GetCurrencyInfo = function(id)
+      if id ~= 1792 then return nil end
+      if world.honorCurrency == nil then return nil end
+      return { name = "Honor", quantity = world.honorCurrency }
+    end,
+  }
   g.GetXPExhaustion = function() return world.restedXp end
   g.IsXPUserDisabled = function() return world.xpDisabled end
   g.GetQuestLogRewardXP = function() return world.questReward[world.selectedQuest] end
@@ -107,7 +120,7 @@ local function loadAddon(world)
     IsAddOnLoaded = function(n) return world.loadedAddons[n] == true end,
   }
 
-  g.IsInInstance = function() return world.inInstance end
+  g.IsInInstance = function() return world.inInstance, world.instanceType end
   g.InCombatLockdown = function() return world.inCombat end
   g.UnitAffectingCombat = function(unit) return unit == "player" and world.playerCombat == true end
   g.IsInGuild = function() return world.inGuild == true end
@@ -193,6 +206,14 @@ local function loadAddon(world)
     HasMaximumRenown = function(id)
       local m = world.major[id]
       return m ~= nil and m.hasMax == true
+    end,
+    GetMajorFactionProgressionInfo = function(id)
+      local p = world.pvpProgression
+      if p == nil or id ~= 2800 then return nil end
+      return { renownLevel = p.level, renownReputationEarned = p.earned,
+               renownLevelThreshold = p.threshold, maxLevel = p.maxLevel or 0,
+               previousWeekProgressiveMaxLevel = 0,
+               currentWeekProgressiveMaxLevel = p.maxLevel or 0, weekNumber = 1 }
     end,
   }
   g.C_GossipInfo = {
@@ -395,6 +416,9 @@ end
 local function newWorld()
   return { now = 1000000, xp = 0, max = 1000, level = 10, guid = "Player-11-0001",
            restedXp = nil, xpDisabled = false,
+           honor = 0, honorMax = 1000, honorLevel = 1,
+           pvpProgression = nil, honorCurrency = nil,
+           instanceType = nil, activeBattlefield = false,
            factions = {}, watchedID = nil, isMajor = {}, paragon = {},
            playerMaxLevel = 90, expansionMaxLevel = 90, latestMaxLevel = 90,
            timerunning = false, trial = false,
@@ -524,6 +548,7 @@ do -- fresh profile gets all defaults and hides the native bar
   check("fresh alwaysShow defaults false", ns.db.alwaysShow == false)
   check("fresh announce defaults off", ns.db.announce == "off")
   check("fresh density defaults standard", ns.db.density == "standard")
+  check("fresh display defaults auto", ns.db.display == "auto")
   check("fresh goal defaults empty", ns.db.goal == "")
   check("fresh repPin defaults auto", ns.db.repPin == 0)
   check("fresh position defaults", ns.db.point == "BOTTOM" and ns.db.x == 0 and ns.db.y == 100)
@@ -2381,17 +2406,19 @@ do
   check("category registered", w.settingsCat == "VocXP" and w.settingsCatRegistered)
   local keys = {}
   for _, r in ipairs(w.settingsReg) do keys[r.key] = r end
-  check("eight options registered", keys.shown ~= nil and keys.hideDefault ~= nil
+  check("nine options registered", keys.shown ~= nil and keys.hideDefault ~= nil
     and keys.repMode ~= nil and keys.followLatest ~= nil and keys.locked ~= nil and keys.alwaysShow ~= nil
-    and keys.announce ~= nil and keys.density ~= nil and #w.settingsReg == 8)
+    and keys.announce ~= nil and keys.density ~= nil and keys.display ~= nil and #w.settingsReg == 9)
   check("bound to the live table", keys.shown.tbl == ns.db and keys.locked.tbl == w.env.VocXPDB
-    and keys.hideDefault.tbl == w.env.VocXPDB and keys.density.tbl == w.env.VocXPDB)
+    and keys.hideDefault.tbl == w.env.VocXPDB and keys.density.tbl == w.env.VocXPDB
+    and keys.display.tbl == w.env.VocXPDB)
   check("six checkboxes", w.settingsChecks == 6)
   check("defaults match", keys.shown.default == true and keys.hideDefault.default == true
     and keys.locked.default == false and keys.repMode.default == true and keys.followLatest.default == false
-    and keys.alwaysShow.default == false and keys.density.default == "standard")
+    and keys.alwaysShow.default == false and keys.density.default == "standard"
+    and keys.display.default == "auto")
   w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
-  check("built once", #w.settingsReg == 8)
+  check("built once", #w.settingsReg == 9)
   ns.db.shown = false
   w.settingCallbacks["VocXP_shown"]()
   check("shown applies live", w.frame.shown == false)
@@ -4791,5 +4818,333 @@ do
   w.env.SlashCmdList.VOCXP("rep track Nobody")
   check("unknown name keeps auto", ns.db.repPin == 0
     and w.printed[#w.printed] == "|cff66ccffVocXP|r: no readable faction matches nobody")
+end
+
+-- 59. Battleground honor bar: detection, progress, rate, gains.
+local function honorEvent(w)
+  w.frame.scripts.OnEvent(w.frame, "HONOR_XP_UPDATE")
+end
+
+local function enterBg(w)
+  w.inInstance = true
+  w.instanceType = "pvp"
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+end
+
+local function leaveBg(w)
+  w.inInstance = false
+  w.instanceType = nil
+  w.activeBattlefield = false
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+end
+
+do -- detection: pvp instance type or an active battlefield reads as a BG
+  local w = newWorld()
+  local ns = loadAddon(w)
+  check("outside reads elsewhere", ns.inBattleground() == false)
+  w.inInstance = true -- a dungeon without the pvp type is not a BG
+  check("dungeon is not a BG", ns.inBattleground() == false)
+  w.instanceType = "pvp"
+  check("pvp instance is a BG", ns.inBattleground() == true)
+  w.inInstance, w.instanceType = false, nil
+  w.activeBattlefield = true
+  check("active battlefield is a BG", ns.inBattleground() == true)
+  w.activeBattlefield = false
+  check("leaving clears BG", ns.inBattleground() == false)
+  w.env.C_PvP = nil -- missing API degrades to the instance-type check
+  check("no pvp api reads outside", ns.inBattleground() == false)
+  w.inInstance, w.instanceType = true, "pvp"
+  check("no pvp api keeps pvp type", ns.inBattleground() == true)
+  w.env.IsInInstance = nil -- missing API reads elsewhere, never an error
+  w.inInstance, w.instanceType = false, nil
+  check("no instance api reads outside", ns.inBattleground() == false)
+end
+do -- entering a BG pivots the bar to honor with the honor fill
+  local w = newWorld()
+  w.honor, w.honorMax, w.honorLevel = 500, 1000, 7
+  loadAddon(w)
+  clientLoaded(w)
+  check("xp fill outside", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  enterBg(w)
+  check("bg takes honor events", w.frame.events.HONOR_XP_UPDATE == true
+    and w.frame.events.HONOR_LEVEL_UPDATE == true)
+  check("bg drops xp events", w.frame.events.PLAYER_XP_UPDATE == nil)
+  check("bg bar label", w.label.text == "Honor 500/1k (50%)")
+  check("bg honor fill", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Honor")
+  check("bg honor flare", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook"
+    and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook")
+  check("bg animated values", w.bar.animated[1] == 500 and w.bar.animated[2] == 0
+    and w.bar.animated[3] == 1000 and w.bar.animated[4] == 7)
+  check("bg overlays off", w.restFill.shown == false and w.questFill.shown == false
+    and w.pip.shown == false)
+  check("bg native stays hidden", w.native.shown == false)
+  hover(w)
+  check("bg tooltip collects", w.gametip.title == "Collecting data")
+  check("bg tooltip rank", tiphas(w, "Honor Level 7 · 50% to level 8"))
+end
+do -- honor gains flow into honor per hour and the session
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  enterBg(w)
+  w.now = w.now + 1800
+  w.honor, w.honorMax, w.honorLevel = 500, 1000, 1
+  honorEvent(w)
+  hover(w)
+  check("honor rate title", w.gametip.title == "3k Honor/hr · 15m")
+  check("honor rate sub", tiptexts(w)[1] == "Last 10m")
+  check("honor bar tracks", w.bar.value == 500)
+  check("honor session", tiphas(w, "Session: +0 XP · +500 Honor · 30m"))
+  check("honor history", tiphas(w, "+500 Honor · Battleground · just now"))
+  check("honor no bonus", tiphas(w, "No honor bonus"))
+  w.honor, w.honorLevel = 100, 2 -- level-up carries the remainder across
+  honorEvent(w)
+  check("honor level announces", w.printed[#w.printed] == "|cff66ccffVocXP|r: honor level 2")
+  check("honor level carries", w.ns.historyRows(w.now)[1] == "+600 Honor · Battleground · just now")
+end
+do -- leaving the BG restores the XP bar
+  local w = newWorld()
+  w.xp = 200
+  loadAddon(w)
+  clientLoaded(w)
+  enterBg(w)
+  check("bg owns bar", w.label.text == "Honor 0/1k (0%)")
+  leaveBg(w)
+  check("leave restores xp events", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.HONOR_XP_UPDATE == nil)
+  check("leave restores xp bar", w.label.text == "10  200/1k (20%)")
+  check("leave restores xp fill", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Experience")
+end
+do -- honor helpers: reads, gains, labels, and the level line
+  local w = newWorld()
+  local ns = loadAddon(w)
+  w.honor, w.honorMax, w.honorLevel = 250, 1000, 3
+  local p = ns.readHonorProgress()
+  check("honor read", p.have == 250 and p.need == 1000 and p.level == 3
+    and p.levelLabel == "Honor Level 3" and p.capped == false)
+  w.env.UnitHonor = nil -- missing API reads nil, never an error
+  check("honor missing api nil", ns.readHonorProgress() == nil)
+  check("honor same-level gain", ns.honorGain({ have = 250, need = 1000, level = 3 },
+    { have = 400, need = 1000, level = 3 }) == 150)
+  check("honor level-up carries", ns.honorGain({ have = 800, need = 1000, level = 3 },
+    { have = 100, need = 1000, level = 4 }) == 300)
+  check("honor loss resyncs", ns.honorGain({ have = 400, need = 1000, level = 3 },
+    { have = 100, need = 1000, level = 3 }) == nil)
+  check("honor multi-jump resyncs", ns.honorGain({ have = 400, need = 1000, level = 3 },
+    { have = 100, need = 1000, level = 5 }) == nil)
+  check("honor bar label", ns.honorBarLabel(p) == "Honor 250/1k (25%)")
+  check("honor bar label empty", ns.honorBarLabel(nil) == "No honor data")
+  check("retail unreadable keeps honor", ns.honorArt(nil) == "UI-HUD-ExperienceBar-Fill-Honor")
+  check("honor stats line", ns.honorStatsLine(p) == "Honor Level 3 · 25% to level 4")
+  check("honor level message", ns.honorLevelMessage({ level = 3 }, { level = 4 }) == "honor level 4")
+  check("honor same level silent", ns.honorLevelMessage({ level = 3 }, { level = 3 }) == nil)
+  check("rate suffix honor", ns.rateSuffix("Honor") == " Honor/hr")
+  check("rate suffix rep", ns.rateSuffix("Rep") == " Rep/hr")
+  check("rate suffix xp", ns.rateSuffix(nil) == " XP/hr")
+  check("rate suffix rank", ns.rateSuffix("Rank") == " Rank pts/hr")
+  check("waiting honor", ns.waitingText("Honor") == "Waiting for honor data")
+  check("waiting rank", ns.waitingText("Rank") == "Waiting for rank data")
+  check("quiet honor", ns.quietText("Honor") == "No honor in the last ")
+  check("quiet rank", ns.quietText("Rank") == "No rank points in the last ")
+  check("history noun honor", ns.historyNoun("honor") == "Honor")
+  check("history noun rank", ns.historyNoun("rank") == "Rank pts")
+  check("history accepts rank", ns.noteHistory(w.now, "rank", 100, nil) == true)
+  check("session accepts rank", ns.sessionNote(w.now, "rank", 100) == true)
+  check("summary accepts rank", ns.noteSummaryGain(w.now, "rank", nil, nil, 100) == true)
+  local est = { status = "ready", unit = "Honor", xpPerHour = 3000, etaSeconds = 900 }
+  ns.db.density = "minimal"
+  check("honor minimal", ns.honorLabel(ns.opts(), est, p) == "25%")
+  ns.db.density = "full"
+  check("honor full", ns.honorLabel(ns.opts(), est, p) == "250/1k (25%) · 3k Honor/hr - 15m")
+  ns.db.density = "standard"
+  check("honor standard", ns.honorLabel(ns.opts(), est, p) == "Honor 250/1k (25%)")
+end
+do -- Forever: the BG bar tracks PvP rank points, not UnitHonor
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.pvpProgression = { level = 3, earned = 550, threshold = 8400 }
+  w.honor, w.honorMax, w.honorLevel = 0, 0, 0 -- UnitHonor reads zero here
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  local p = ns.readHonorProgress()
+  check("forever reads rank points", p ~= nil and p.kind == "rank"
+    and p.have == 550 and p.need == 8400 and p.level == 3)
+  check("forever rank label", ns.honorBarLabel(p) == "Rank 3  550/8k (7%)")
+  check("forever rank stats", ns.honorStatsLine(p) == "Rank 3 · 7% to rank 4")
+  check("forever rank gain", ns.honorGain(p, { have = 700, need = 8400, level = 3, kind = "rank" }) == 150)
+  check("forever kind swap resyncs", ns.honorGain(p,
+    { have = 700, need = 8400, level = 3, kind = "honor" }) == nil)
+  check("forever rank message", ns.honorLevelMessage(p,
+    { have = 100, need = 8400, level = 4, kind = "rank" }) == "rank 4")
+  enterBg(w)
+  check("forever bg rank bar", w.label.text == "Rank 3  550/8k (7%)")
+  check("forever bg rank fill", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red")
+  check("forever bg rank flare", w.bar.flare[1] == "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook"
+    and w.bar.flare[2] == "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook")
+  local fa, ff, fl = ns.honorArt(p)
+  check("forever rank art", fa == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red"
+    and ff == "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook"
+    and fl == "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook")
+  local ua, uf, ul = ns.honorArt({ kind = "honor" })
+  check("retail honor art", ua == "UI-HUD-ExperienceBar-Fill-Honor"
+    and uf == "UI-HUD-ExperienceBar-Flare-Faction-Orange-2x-Flipbook"
+    and ul == "UI-HUD-ExperienceBar-Fill-Honor-2x-Flipbook")
+  local na, _, _ = ns.honorArt(nil)
+  check("forever unreadable keeps red", na == "UI-HUD-ExperienceBar-Fill-Reputation-Faction-Red")
+  hover(w)
+  check("forever bg rank tip", tiphas(w, "Rank 3 · 7% to rank 4"))
+  w.now = w.now + 1800
+  w.pvpProgression = { level = 3, earned = 1050, threshold = 8400 }
+  w.frame.scripts.OnEvent(w.frame, "UPDATE_FACTION") -- rank points arrive as faction updates
+  hover(w)
+  check("forever rank rate", w.gametip.title == "1k Rank pts/hr · 7h21m")
+  check("forever rank sub", tiptexts(w)[1] == "Warming up · last 30m of 60m")
+  check("forever rank session", tiphas(w, "Session: +0 XP · +500 Rank pts · 30m"))
+  check("forever rank history", tiphas(w, "+500 Rank pts · Battleground · just now"))
+  w.pvpProgression = { level = 3, earned = 1150, threshold = 8400 }
+  w.now = w.now + 0.05 -- a second quick win shares the burst line
+  w.frame.scripts.OnEvent(w.frame, "UPDATE_FACTION")
+  w.now = w.now + 1
+  w.frame.scripts.OnEvent(w.frame, "ZONE_CHANGED") -- a quiet tick reports the burst
+  check("forever rank burst", w.printed[#w.printed] == "|cff66ccffVocXP|r: +600 Rank pts")
+end
+do -- Forever: the rank tooltip names the honor-currency rate
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.pvpProgression = { level = 3, earned = 550, threshold = 8400 }
+  w.honorCurrency = 1200
+  loadAddon(w)
+  clientLoaded(w)
+  enterBg(w)
+  hover(w)
+  check("currency collecting", tiphas(w, "Honor: collecting data"))
+  w.now = w.now + 1800
+  w.honorCurrency = 1700
+  w.frame.scripts.OnEvent(w.frame, "CURRENCY_DISPLAY_UPDATE", 1792)
+  hover(w)
+  check("currency rate", tiphas(w, "Honor: 3k/hr"))
+  w.frame.scripts.OnEvent(w.frame, "CURRENCY_DISPLAY_UPDATE", 1234) -- other currencies never touch it
+  hover(w)
+  check("other currency ignored", tiphas(w, "Honor: 3k/hr"))
+  w.now = w.now + 300
+  w.honorCurrency = 1500 -- spending resyncs without awarding
+  w.frame.scripts.OnEvent(w.frame, "CURRENCY_DISPLAY_UPDATE", 1792)
+  hover(w)
+  check("spending never awards", tiphas(w, "Honor: 3k/hr"))
+end
+do -- Forever: missing rank API reads nil, never an error
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  local ns = loadAddon(w)
+  check("forever no rank api nil", ns.readHonorProgress() == nil)
+  w.env.C_MajorFactions = nil
+  w.pvpProgression = { level = 1, earned = 10, threshold = 100 }
+  check("forever no major api nil", ns.readHonorProgress() == nil)
+  w.honorCurrency = 1200
+  check("forever currency read", ns.readHonorCurrency() == 1200)
+  w.env.C_CurrencyInfo = nil
+  check("forever no currency api nil", ns.readHonorCurrency() == nil)
+  check("forever no currency line nil", ns.honorCurrencyLine(w.now) == nil)
+end
+do -- Forever: a zero threshold at max rank paints a full capped bar
+  local w = newWorld()
+  w.addonInterfaceVersion = 16001
+  w.pvpProgression = { level = 9, earned = 0, threshold = 0 }
+  local ns = loadAddon(w)
+  local p = ns.readHonorProgress()
+  check("forever capped rank", p ~= nil and p.capped == true and p.capLabel == "Rank 9")
+  check("forever capped label", ns.honorBarLabel(p) == "Rank 9")
+  enterBg(w)
+  check("forever capped bar", w.label.text == "Rank 9")
+  hover(w)
+  check("forever capped tip", w.gametip.title == "Rank 9")
+end
+
+-- 60. Bar display: auto switches, pins hold one bar everywhere.
+do -- slash reports, sets, and repairs
+  local w = newWorld()
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  w.env.SlashCmdList.VOCXP("display")
+  check("display reports", w.printed[#w.printed] ==
+    "|cff66ccffVocXP|r: bar display auto (auto, xp, rep, or honor)")
+  w.env.SlashCmdList.VOCXP("display honor")
+  check("display honor pins", ns.db.display == "honor"
+    and w.frame.events.HONOR_XP_UPDATE == true and w.frame.events.PLAYER_XP_UPDATE == nil)
+  check("display honor confirms", w.printed[#w.printed] == "|cff66ccffVocXP|r: bar display honor")
+  check("display honor bar", w.label.text == "Honor 0/1k (0%)")
+  w.env.SlashCmdList.VOCXP("display bogus")
+  check("display bad keeps", ns.db.display == "honor"
+    and w.printed[#w.printed] == "|cff66ccffVocXP|r: bar display honor (auto, xp, rep, or honor)")
+  w.env.SlashCmdList.VOCXP("display auto")
+  check("display auto restores", ns.db.display == "auto"
+    and w.frame.events.PLAYER_XP_UPDATE == true and w.frame.events.HONOR_XP_UPDATE == nil)
+end
+do -- a corrupt display repairs to auto
+  local w = newWorld()
+  w.savedVars = { display = "bogus" }
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("corrupt display repairs", ns.db.display == "auto" and ns.display() == "auto")
+end
+do -- pinned XP at the cap paints an empty Max level bar
+  local w = newWorld()
+  capWorld(w)
+  loadAddon(w)
+  clientLoaded(w)
+  check("auto capped tracks rep", w.label.text == "No faction tracked")
+  w.env.SlashCmdList.VOCXP("display xp")
+  check("pinned xp capped label", w.label.text == "Max level")
+  check("pinned xp capped empty", w.bar.value == 0 and w.bar.animated[2] == 0 and w.bar.animated[3] == 1)
+  check("pinned xp capped fill", w.bar.barAtlas == "UI-HUD-ExperienceBar-Fill-Experience")
+  check("pinned xp capped events", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.UPDATE_FACTION == nil)
+end
+do -- pinned rep holds while leveling and inside a BG
+  local w = newWorld()
+  loadAddon(w)
+  clientLoaded(w)
+  w.env.SlashCmdList.VOCXP("display rep")
+  check("pinned rep leveling", w.frame.events.UPDATE_FACTION == true
+    and w.frame.events.PLAYER_XP_UPDATE == nil and w.label.text == "No faction tracked")
+  enterBg(w)
+  check("pinned rep keeps BG", w.frame.events.UPDATE_FACTION == true
+    and w.frame.events.HONOR_XP_UPDATE == nil and w.label.text == "No faction tracked")
+  leaveBg(w)
+  w.env.SlashCmdList.VOCXP("display auto")
+  check("auto rep releases", w.frame.events.PLAYER_XP_UPDATE == true)
+end
+do -- pinned XP holds inside a BG; auto pivots back to honor
+  local w = newWorld()
+  w.xp = 200
+  loadAddon(w)
+  clientLoaded(w)
+  w.env.SlashCmdList.VOCXP("display xp")
+  enterBg(w)
+  check("pinned xp keeps BG", w.frame.events.PLAYER_XP_UPDATE == true
+    and w.frame.events.HONOR_XP_UPDATE == nil and w.label.text == "10  200/1k (20%)")
+  w.env.SlashCmdList.VOCXP("display auto")
+  check("auto pivots to honor", w.frame.events.HONOR_XP_UPDATE == true
+    and w.frame.events.PLAYER_XP_UPDATE == nil)
+  leaveBg(w)
+  check("auto BG exit restores xp", w.label.text == "10  200/1k (20%)")
+end
+do -- the panel display row applies live without reload
+  local w = newWorld()
+  w.withSettings = true
+  capWorld(w)
+  setFactions(w, { { id = 101, name = "Court", reaction = 6, lo = 12000, hi = 21000, standing = 15000 } })
+  w.watchedID = 101
+  local ns = loadAddon(w)
+  w.env.VocXPDB = w.savedVars or {}
+  w.frame.scripts.OnEvent(w.frame, "ADDON_LOADED", "VocXP")
+  w.frame.scripts.OnEvent(w.frame, "PLAYER_ENTERING_WORLD")
+  check("auto capped tracks rep", w.label.text == "Court  3k/9k (33%)")
+  ns.db.display = "honor"
+  w.settingCallbacks["VocXP_display"]()
+  check("display honor applies live", w.frame.events.HONOR_XP_UPDATE == true and w.label.text == "Honor 0/1k (0%)")
+  ns.db.display = "auto"
+  w.settingCallbacks["VocXP_display"]()
+  check("display auto applies live", w.label.text == "Court  3k/9k (33%)")
 end
 print("tests/run.lua: " .. passed .. " checks passed")
