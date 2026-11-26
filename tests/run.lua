@@ -5032,6 +5032,17 @@ do -- Forever: the rank tooltip names the honor-currency rate
   hover(w)
   check("spending never awards", tiphas(w, "Honor: 3k/hr"))
 end
+do -- secret honor and rank reads reject the row, never an error
+  local w = newWorld()
+  w.honor, w.honorMax, w.honorLevel = 500, 1000, 7
+  w.secretStamps[500] = true -- current honor refused
+  local ns = loadAddon(w)
+  clientLoaded(w)
+  check("secret honor nil", ns.readHonorProgress() == nil)
+  w.secretStamps[500] = nil
+  w.secretStamps[7] = true -- honor level refused
+  check("secret honor level nil", ns.readHonorProgress() == nil)
+end
 do -- Forever: missing rank API reads nil, never an error
   local w = newWorld()
   w.addonInterfaceVersion = 16001

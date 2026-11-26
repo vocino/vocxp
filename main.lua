@@ -2459,6 +2459,12 @@ function ns.readUnitHonorProgress()
   local okNeed, need = pcall(UnitHonorMax, "player")
   local okLevel, level = pcall(UnitHonorLevel, "player")
   if not okCur or not okNeed or not okLevel then return nil end
+  -- UnitHonor and UnitHonorLevel can read back secret (Midnight): gate
+  -- each directly with canaccessvalue before any compare or floor, the
+  -- same form the aura-stamp reads use; anySecret keeps the grouped
+  -- runtime check below.
+  if canaccessvalue and not canaccessvalue(have) then return nil end
+  if canaccessvalue and not canaccessvalue(level) then return nil end
   if anySecret(have, need, level) then return nil end
   if not finite(have) or not finite(need) or not finite(level) then return nil end
   if need <= 0 or have < 0 or level < 1 or level ~= math.floor(level) then return nil end
